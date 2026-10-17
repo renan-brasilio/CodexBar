@@ -254,6 +254,20 @@ public enum ProviderVersionDetector {
         return nil
     }
 
+    public static func ompVersion() -> String? {
+        let env = ProcessInfo.processInfo.environment
+        // Provider-specific by design: This detector checks the OMP CLI version.
+        guard let path = BinaryLocator.resolveOMPBinary(env: env, loginPATH: nil)
+            ?? TTYCommandRunner.which("omp") else { return nil }
+        if let raw = Self.run(path: path, args: ["--version"]) {
+            if raw.hasPrefix("omp/") {
+                return String(raw.dropFirst(4)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            return raw
+        }
+        return nil
+    }
+
     /// Provider-specific by design: Kimi ships its CLI in dedicated standalone installation directories.
     public static func kimiVersion() -> String? {
         self.kimiVersion(

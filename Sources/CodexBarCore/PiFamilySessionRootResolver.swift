@@ -121,6 +121,7 @@ struct OMPSessionRootResolver: Sendable {
                home: home,
                baseDirectory: baseDirectory)
         {
+            // Provider-specific by design: This resolves OMP's default XDG session root.
             let xdgSessions = xdgDataHome
                 .appendingPathComponent("omp", isDirectory: true)
                 .appendingPathComponent("sessions", isDirectory: true)
@@ -183,6 +184,7 @@ struct OMPSessionRootResolver: Sendable {
             home: home,
             baseDirectory: baseDirectory)
         {
+            // Provider-specific by design: This resolves OMP's named profile roots under XDG.
             let xdgProfileRoot = xdgDataHome
                 .appendingPathComponent("omp", isDirectory: true)
                 .appendingPathComponent("profiles", isDirectory: true)
@@ -221,6 +223,7 @@ struct OMPSessionRootResolver: Sendable {
                 home: home,
                 baseDirectory: baseDirectory)
         {
+            // Provider-specific by design: This discovers OMP profiles under XDG.
             directories.append(
                 xdgDataHome
                     .appendingPathComponent("omp", isDirectory: true)
@@ -315,6 +318,7 @@ struct OMPSessionRootResolver: Sendable {
         {
             configuredPath
         } else {
+            // Provider-specific by design: This defaults to OMP's standard configuration directory.
             ".omp"
         }
         guard !name.hasPrefix("/") else { return nil }

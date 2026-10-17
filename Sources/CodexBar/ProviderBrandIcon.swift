@@ -41,8 +41,12 @@ enum ProviderBrandIcon {
             bundle.url(forResource: brandResourceName, withExtension: fileExtension)
                 .flatMap { NSImage(contentsOf: $0) }
         }.first : nil
-        guard let image = brandImage ?? bundle.url(forResource: baseName, withExtension: "svg")
-            .flatMap({ NSImage(contentsOf: $0) }) else { return nil }
+        guard let image = brandImage
+            ?? bundle.url(forResource: baseName, withExtension: "svg").flatMap({ NSImage(contentsOf: $0) })
+            ?? Bundle.main.url(forResource: baseName, withExtension: "svg").flatMap({ NSImage(contentsOf: $0) })
+            ?? Bundle.main.resourceURL.flatMap({ NSImage(contentsOf: $0.appendingPathComponent("\(baseName).svg")) })
+            ?? Bundle.main.resourceURL.flatMap({ NSImage(contentsOf: $0.appendingPathComponent("CodexBar_CodexBar.bundle").appendingPathComponent("\(baseName).svg")) })
+        else { return nil }
 
         image.size = self.size
         image.isTemplate = brandImage == nil

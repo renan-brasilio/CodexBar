@@ -156,9 +156,9 @@ struct ProviderArchitectureGatekeeperTests {
             Self.hash(descriptor.branding.burnDownWidgetColor, into: &burnDownFingerprint)
         }
 
-        // Future AGI and Munito extend the palette without changing existing provider colors.
-        #expect(widgetFingerprint == 6_735_779_563_872_487_318)
-        #expect(burnDownFingerprint == 3_084_140_234_155_981_949)
+        // Future AGI, Munito, and OMP extend the palette without changing existing provider colors.
+        #expect(widgetFingerprint == 4_791_282_498_545_731_702)
+        #expect(burnDownFingerprint == 8_676_703_135_232_402_319)
     }
 
     @Test
@@ -3353,9 +3353,9 @@ struct ProviderArchitectureGatekeeperTests {
         AllowedProviderConstruct(
             path: "Sources/CodexBarCore/AgentSession.swift",
             anchor: "guard self.provider(for: record) == .claude else { return .cli }",
-            expectedProviderIDs: ["claude", "codex", "pi"],
-            expectedReferenceCount: 4,
-            expectedReferenceFingerprint: ["pi@0", "pi@1", "claude@13", "codex@21"],
+            expectedProviderIDs: ["claude", "codex", "omp", "pi"],
+            expectedReferenceCount: 8,
+            expectedReferenceFingerprint: ["pi@0", "pi@1", "omp@3", "omp@4", "omp@8", "omp@9", "claude@13", "codex@21"],
             reason: "This exact host integration maps a provider-owned process, path, or window contract."),
         AllowedProviderConstruct(
             path: "Sources/CodexBarCore/AgentSession.swift",

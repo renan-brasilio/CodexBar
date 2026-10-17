@@ -1,0 +1,119 @@
+import Foundation
+
+public enum OMPProviderDescriptor {
+    public static let descriptor: ProviderDescriptor = Self.makeDescriptor()
+
+    static func makeDescriptor() -> ProviderDescriptor {
+        ProviderDescriptor(
+            id: .omp,
+            settingsSection: .init(OMPProviderSettingsKey.self),
+            metadata: ProviderMetadata(
+                id: .omp,
+                displayName: "OMP",
+                sessionLabel: "5-Hour",
+                weeklyLabel: "Weekly",
+                opusLabel: nil,
+                supportsOpus: false,
+                supportsCredits: false,
+                creditsHint: "",
+                toggleTitle: "Show OMP usage",
+                cliName: "omp",
+                defaultEnabled: false,
+                widgetSelectable: false,
+                burnDownWidgetSelectable: false,
+                isPrimaryProvider: false,
+                usesAccountFallback: false,
+                dashboardURL: "https://github.com/renan-brasilio/omp-renan",
+                statusPageURL: nil),
+            branding: ProviderBranding(
+                iconStyle: .init(provider: .omp),
+                iconResourceName: "ProviderIcon-omp",
+                color: ProviderColor(hex: 0x10B981),
+                confettiPalette: [
+                    ProviderColor(hex: 0x10B981),
+                    ProviderColor(hex: 0x06B6D4),
+                    ProviderColor(hex: 0x3B82F6),
+                ]),
+            tokenCost: ProviderTokenCostConfig(
+                supportsTokenCost: false,
+                noDataMessage: { "OMP cost summary is not supported." }),
+            pace: ProviderPaceCapability(
+                primary: .session(maximumMinutes: 300, requiresDuration: true),
+                secondary: .weeklyWithDuration),
+            history: .optIn,
+            presentation: ProviderUsagePresentation(
+                rateWindowLabeler: { metadata, snapshot, _ in
+                    let primaryTitle: String = {
+                        if let desc = snapshot.primary?.resetDescription, let match = desc.components(separatedBy: " accts").first {
+                            return "\(match) accts (5-Hour)"
+                        }
+                        return metadata.sessionLabel
+                    }()
+                    let secondaryTitle: String = {
+                        if let desc = snapshot.secondary?.resetDescription, let match = desc.components(separatedBy: " accts").first {
+                            return "\(match) accts (Weekly)"
+                        }
+                        return metadata.weeklyLabel
+                    }()
+                    return ProviderRateWindowLabels(
+                        primary: primaryTitle,
+                        secondary: secondaryTitle,
+                        tertiary: "",
+                        showsTertiary: false)
+                },
+                iconWindowResolver: { context in
+                    ProviderUsageWindowPair(primary: context.snapshot.primary, secondary: context.snapshot.secondary)
+                },
+                menuBarWindowResolver: { context in
+                    switch context.metric {
+                    case .primary:
+                        return .resolved(context.snapshot.primary)
+                    case .secondary:
+                        return .resolved(context.snapshot.secondary ?? context.snapshot.primary)
+                    case .automatic:
+                        return .resolved(context.snapshot.primary ?? context.snapshot.secondary)
+                    default:
+                        return .unhandled
+                    }
+                }),
+            fetchPlan: ProviderFetchPlan(
+                sourceModes: [.auto, .cli],
+                pipeline: ProviderFetchPipeline(resolveStrategies: { _ in [OMPCLIUsageStrategy()] })),
+            cli: ProviderCLIConfig(
+                name: "omp",
+                aliases: ["oh-my-prompt"],
+                versionDetector: { _ in ProviderVersionDetector.ompVersion() }))
+    }
+}
+
+struct OMPCLIUsageStrategy: ProviderFetchStrategy {
+    let id: String = "omp.cli"
+    let kind: ProviderFetchKind = .cli
+
+    func isAvailable(_ context: ProviderFetchContext) async -> Bool {
+        BinaryLocator.resolveOMPBinary(
+            env: context.env,
+            loginPATH: LoginShellPathCache.shared.current) != nil
+    }
+
+    func fetch(_ context: ProviderFetchContext) async throws -> ProviderFetchResult {
+        let subprovider = context.env["OMP_SUBPROVIDER"]
+            ?? context.settings?.omp?.effectiveSubprovider
+            ?? "all"
+
+        let hiddenItemIDs = context.settings?.omp?.hiddenUsageItemIDs ?? []
+
+        let snapshot = try await OMPCLIProbe().fetch(
+            environment: context.env,
+            subprovider: subprovider,
+            hiddenItemIDs: hiddenItemIDs)
+
+        return self.makeResult(
+            usage: snapshot,
+            sourceLabel: "omp-cli")
+    }
+
+    func shouldFallback(on _: Error, context _: ProviderFetchContext) -> Bool {
+        false
+    }
+}

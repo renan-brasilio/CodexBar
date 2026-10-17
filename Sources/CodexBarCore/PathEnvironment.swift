@@ -148,6 +148,37 @@ public enum BinaryLocator {
             home: home)
     }
 
+    public static func resolveOMPBinary(
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        loginPATH: [String]? = LoginShellPathCache.shared.current,
+        commandV: (String, String?, TimeInterval, FileManager) -> String? = ShellCommandLocator.commandV,
+        aliasResolver: (String, String?, TimeInterval, FileManager, String) -> String? = ShellCommandLocator
+            .resolveAlias,
+        fileManager: FileManager = .default,
+        home: String = NSHomeDirectory()) -> String?
+    {
+        if let override = env["OMP_CLI_PATH"] {
+            return fileManager.isExecutableFile(atPath: override) ? override : nil
+        }
+        // Provider-specific by design: This named resolver supplies OMP's actual CLI executable name.
+        return self.resolveBinary(
+            name: "omp",
+            overrideKey: "OMP_CLI_PATH",
+            env: env,
+            loginPATH: loginPATH,
+            commandV: commandV,
+            aliasResolver: aliasResolver,
+            wellKnownPaths: [
+                "\(home)/Library/Application Support/Tern/omp/bin/omp",
+                "\(home)/.omp/bin/omp",
+                "\(home)/.local/bin/omp",
+                "/opt/homebrew/bin/omp",
+                "/usr/local/bin/omp",
+            ],
+            fileManager: fileManager,
+            home: home)
+    }
+
     public static func resolveCodexBinary(
         env: [String: String] = ProcessInfo.processInfo.environment,
         loginPATH: [String]? = LoginShellPathCache.shared.current,

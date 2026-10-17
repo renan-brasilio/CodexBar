@@ -37,6 +37,7 @@ enum PiFamilySessionFileParser {
 
         var titleSlotWasPresent = false
         var titleSlot: String?
+        // Provider-specific by design: OMP sessions can start with a title block.
         if dialect == .omp,
            let first = Self.jsonObject(from: nonEmptyLines[0]),
            first["type"] as? String == "title"
@@ -563,6 +564,7 @@ struct PiFamilySessionScanner: Sendable {
                 startedAt: nil,
                 command: context.command,
                 arguments: context.arguments)
+            // Provider-specific by design: Check for explicit OMP profile in process context.
             return AgentPSOutputParser.piDialect(for: process) == .omp &&
                 (Self.commandLineValue(
                     "--profile",
@@ -667,6 +669,7 @@ struct PiFamilySessionScanner: Sendable {
         {
             return self.isCWDIndependentPath(selector, environment: environment)
         }
+        // Provider-specific by design: Check dialect-specific environment and command line selectors.
         if AgentPSOutputParser.piDialect(for: process) == .pi,
            let selector = environment["PI_CODING_AGENT_DIR"],
            !selector.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -722,6 +725,7 @@ struct PiFamilySessionScanner: Sendable {
         {
             return "process:" + dialect.rawValue + ":session-dir:" + url.path
         }
+        // Provider-specific by design: OMP command-line profile identifier.
         if dialect == .omp,
            let profile = Self.commandLineValue(
                "--profile",
@@ -915,6 +919,7 @@ struct PiFamilySessionScanner: Sendable {
             environment: safeEnvironment,
             baseDirectory: baseDirectory).map { root in
             let canonical = OMPSessionRootResolver.canonicalURL(root.url)
+            // Provider-specific by design: OMP default cost root resolution.
             let defaultRootIsKnownEmpty = !processHasExplicitSelection &&
                 !Self.hasExplicitCostRootSelection(dialect: .omp, environment: environment) &&
                 Self.defaultCostSessionRoot(for: .omp, environment: environment) == canonical

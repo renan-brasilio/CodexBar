@@ -345,6 +345,7 @@ public enum AgentPSOutputParser {
         executableBasename: String,
         arguments: @autoclosure () -> [String]) -> AgentSession.Dialect?
     {
+        // Provider-specific by design: This helper detects Pi and OMP process dialects.
         let firstBasename = AgentProcessPath.basename(executableBasename).lowercased()
         if firstBasename == AgentSession.Provider.pi.rawValue {
             return .pi
