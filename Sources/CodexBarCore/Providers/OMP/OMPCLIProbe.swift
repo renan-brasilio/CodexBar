@@ -25,7 +25,6 @@ public struct OMPCLIProbe: Sendable {
     public func fetch(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         subprovider: String = "all",
-        hiddenItemIDs: [String] = [],
         now: Date = Date()) async throws -> UsageSnapshot
     {
         let loginPATH = LoginShellPathCache.shared.current
@@ -66,7 +65,6 @@ public struct OMPCLIProbe: Sendable {
         return try OMPUsageParser.parse(
             jsonString: stdout,
             subprovider: subprovider,
-            hiddenItemIDs: hiddenItemIDs,
             now: now)
     }
 }

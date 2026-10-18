@@ -43,10 +43,14 @@ public enum OMPProviderDescriptor {
             history: .optIn,
             presentation: ProviderUsagePresentation(
                 rateWindowLabeler: { metadata, snapshot, _ in
-                    let primaryTitle = snapshot.primary?.windowMinutes == 10080
-                        ? metadata.weeklyLabel
-                        : metadata.sessionLabel
-                    let secondaryTitle = metadata.weeklyLabel
+                    let primaryTitle = snapshot.primary?.windowMinutes.map { minutes in
+                        minutes <= 300 ? metadata.sessionLabel : "\(minutes / 60)h"
+                    } ?? metadata.sessionLabel
+                    let secondaryTitle = snapshot.secondary?.windowMinutes.map { minutes in
+                        if minutes >= 40000 { return "Monthly" }
+                        if minutes >= 10000 { return metadata.weeklyLabel }
+                        return "\(minutes / 60)h"
+                    } ?? metadata.weeklyLabel
                     return ProviderRateWindowLabels(
                         primary: primaryTitle,
                         secondary: secondaryTitle,
@@ -93,12 +97,9 @@ struct OMPCLIUsageStrategy: ProviderFetchStrategy {
             ?? context.settings?.omp?.effectiveSubprovider
             ?? "all"
 
-        let hiddenItemIDs = context.settings?.omp?.hiddenUsageItemIDs ?? []
-
         let snapshot = try await OMPCLIProbe().fetch(
             environment: context.env,
-            subprovider: subprovider,
-            hiddenItemIDs: hiddenItemIDs)
+            subprovider: subprovider)
 
         return self.makeResult(
             usage: snapshot,

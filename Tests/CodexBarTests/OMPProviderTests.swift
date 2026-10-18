@@ -154,7 +154,7 @@ struct OMPProviderTests {
     }
 
     @Test
-    func `omp usage parser parses combined usage accurately`() throws {
+    func `omp usage parser calculates combined usage from capacity totals`() throws {
         let now = Date(timeIntervalSince1970: 1792220000)
         let snapshot = try OMPUsageParser.parse(
             jsonString: Self.sampleOMPUsageJSON,
@@ -163,11 +163,13 @@ struct OMPProviderTests {
 
         let primary = try #require(snapshot.primary)
         #expect(primary.windowMinutes == 300)
-        #expect(primary.usedPercent <= 10.0)
+        // 5h capacity: 0.04 used / 5 accounts = 0.8%
+        #expect(abs(primary.usedPercent - 0.8) < 0.001)
 
         let secondary = try #require(snapshot.secondary)
         #expect(secondary.windowMinutes == 10080)
-        #expect(secondary.usedPercent >= 20.0)
+        // 7d capacity: 1.4 used / 5 accounts = 28.0%
+        #expect(abs(secondary.usedPercent - 28.0) < 0.001)
 
         let extras = try #require(snapshot.extraRateWindows)
         #expect(extras.count >= 2)
@@ -188,9 +190,13 @@ struct OMPProviderTests {
 
         let primary = try #require(snapshot.primary)
         #expect(primary.windowMinutes == 300)
+        // 0.04 / 4 = 1.0%
+        #expect(abs(primary.usedPercent - 1.0) < 0.001)
 
         let secondary = try #require(snapshot.secondary)
         #expect(secondary.windowMinutes == 10080)
+        // 1.4 / 4 = 35.0%
+        #expect(abs(secondary.usedPercent - 35.0) < 0.001)
 
         let details = snapshot.details
         #expect(details.contains { $0.title?.contains("Antigravity") == true })
@@ -212,32 +218,39 @@ struct OMPProviderTests {
     }
 
     @Test
-    func `omp usage parser honors hidden usage item IDs for 5 vs 6 accounts`() throws {
-        let now = Date(timeIntervalSince1970: 1792220000)
+    func `omp usage parser normalizes count and request limits`() {
+        let countLimit = OMPLimit(
+            id: "copilot:chat",
+            amount: OMPAmount(unit: "requests", remaining: 180, used: 20, limit: 200))
+        let norm = OMPUsageParser.normalizeAmount(countLimit)
+        #expect(abs(norm.usedPercent - 10.0) < 0.001)
+        #expect(abs(norm.remainingPercent - 90.0) < 0.001)
+        #expect(norm.summaryText == "20/200 requests")
+    }
 
-        // 1. When 6 accounts window is hidden (only 5 accounts checked)
-        let only5AccountsSnapshot = try OMPUsageParser.parse(
-            jsonString: Self.sampleOMPUsageJSON,
-            subprovider: "all",
-            hiddenItemIDs: ["metric:secondary"],
-            now: now)
-        let primary5 = try #require(only5AccountsSnapshot.primary)
-        #expect(primary5.windowMinutes == 300)
-        #expect(only5AccountsSnapshot.secondary == nil)
-
-        // 2. When 5 accounts window is hidden (only 6 accounts checked)
-        let only6AccountsSnapshot = try OMPUsageParser.parse(
-            jsonString: Self.sampleOMPUsageJSON,
-            subprovider: "all",
-            hiddenItemIDs: ["metric:primary"],
-            now: now)
-        let primary6 = try #require(only6AccountsSnapshot.primary)
-        #expect(primary6.windowMinutes == 10080)
-        #expect(only6AccountsSnapshot.secondary == nil)
-
-        // The percentages and windows distinctly differ between selecting 5 vs 6 accounts
-        #expect(primary5.usedPercent != primary6.usedPercent)
-        #expect(primary5.windowMinutes != primary6.windowMinutes)
+    @Test
+    func `omp usage parser omits aggregate windows when no matching quota exists`() throws {
+        let json = """
+        {
+          "reports": [
+            {
+              "provider": "github-copilot",
+              "limits": [
+                {
+                  "id": "copilot:chat",
+                  "window": { "id": "monthly" },
+                  "amount": { "used": 20, "limit": 200 }
+                }
+              ]
+            }
+          ]
+        }
+        """
+        let snapshot = try OMPUsageParser.parse(jsonString: json, subprovider: "all")
+        // No 5h or 7d capacity accounts contributed
+        #expect(snapshot.primary == nil)
+        #expect(snapshot.secondary == nil)
+        #expect(snapshot.extraRateWindows?.contains { $0.id.contains("chat") } == true)
     }
 
     @Test
