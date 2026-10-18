@@ -40,7 +40,7 @@ public enum OMPProviderDescriptor {
             pace: ProviderPaceCapability(
                 primary: .session(maximumMinutes: 300, requiresDuration: true),
                 secondary: .weeklyWithDuration),
-            history: .optIn,
+            history: .unavailable,
             presentation: ProviderUsagePresentation(
                 rateWindowLabeler: { metadata, snapshot, _ in
                     let primaryTitle = snapshot.primary?.resetDescription

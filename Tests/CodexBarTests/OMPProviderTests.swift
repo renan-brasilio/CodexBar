@@ -295,7 +295,7 @@ struct OMPProviderTests {
         }
         """
         // Exclude xAI Grok via hiddenItemIDs (simulating unchecking xAI in Settings -> Visible usage items)
-        let hidden = ["metric:omp-xai-0-7d", "detailSection:xAI Grok"]
+        let hidden = ["metric:omp-xai-0-xai:5h", "detailSection:xAI Grok"]
         let snapshot = try OMPUsageParser.parse(jsonString: json, subprovider: "all", hiddenItemIDs: hidden)
         let primary = try #require(snapshot.primary)
         // Total accounts = 4 (AGY) + 1 (Codex) = 5 accounts (xAI's 1 account is excluded!)
@@ -410,7 +410,7 @@ struct OMPProviderTests {
         """
         let snapshot = try OMPUsageParser.parse(jsonString: json, subprovider: "all")
         let agySection = try #require(snapshot.details.first { $0.title?.contains("Antigravity") == true })
-        let row = try #require(agySection.rows.first)
+        let row = try #require(agySection.rows.first { $0.secondaryValue != nil })
         // The breakdown in secondaryValue must preserve the full email "testuser@gmail.com" so email redactors match it
         let secondary = try #require(row.secondaryValue)
         #expect(secondary.contains("testuser@gmail.com"))
@@ -441,9 +441,61 @@ struct OMPProviderTests {
         // Snapshot identity must remain neutral across multi-account aggregates
         #expect(snapshot.identity?.accountEmail == nil)
         #expect(snapshot.identity?.accountID == "google-antigravity")
-        // Section title must reflect total capacity accounts (4), not just 1 report
+        // Section title is stable and total capacity accounts (4) are presented separately
         let agySection = try #require(snapshot.details.first { $0.title?.contains("Accounts") == true })
-        #expect(agySection.title?.contains("(4)") == true)
+        #expect(agySection.title == "Google Antigravity Accounts")
+        #expect(agySection.rows.first?.label == "Connected Accounts")
+        #expect(agySection.rows.first?.value == "4")
+    }
+
+    @Test
+    func `omp usage parser gives each xAI limit a unique ID and derives window cadence`() throws {
+        let json = """
+        {
+          "reports": [
+            {
+              "provider": "xai-oauth",
+              "metadata": { "email": "grok@gmail.com" },
+              "limits": [
+                {
+                  "id": "xai:grokbot:5h",
+                  "label": "GrokBot",
+                  "window": { "id": "5h", "durationMs": 18000000 },
+                  "amount": { "used": 10, "limit": 100 }
+                },
+                {
+                  "id": "xai:supergrok:weekly",
+                  "label": "SuperGrok Weekly Credits",
+                  "window": { "id": "weekly", "durationMs": 604800000 },
+                  "amount": { "used": 25, "limit": 100 }
+                }
+              ]
+            }
+          ]
+        }
+        """
+        let snapshot = try OMPUsageParser.parse(jsonString: json, subprovider: "all")
+        let extra = try #require(snapshot.extraRateWindows)
+        let grokBot = try #require(extra.first { $0.id == "omp-xai-0-xai:grokbot:5h" })
+        #expect(grokBot.title == "GrokBot")
+        #expect(grokBot.window.windowMinutes == 300)
+        #expect(abs(grokBot.window.usedPercent - 10.0) < 0.001)
+
+        let superGrok = try #require(extra.first { $0.id == "omp-xai-0-xai:supergrok:weekly" })
+        #expect(superGrok.title == "SuperGrok Weekly Credits")
+        #expect(superGrok.window.windowMinutes == 10080)
+        #expect(abs(superGrok.window.usedPercent - 25.0) < 0.001)
+
+        // Detail rows must use unique limit IDs
+        let xaiSection = try #require(snapshot.details.first { $0.title == "xAI Grok" })
+        #expect(xaiSection.rows.contains { $0.id == "xai-xai:grokbot:5h" })
+        #expect(xaiSection.rows.contains { $0.id == "xai-xai:supergrok:weekly" })
+    }
+
+    @Test
+    func `omp provider descriptor marks history as unavailable`() {
+        let descriptor = ProviderDescriptorRegistry.descriptor(for: .omp)
+        #expect(descriptor.history == .unavailable)
     }
 
     @Test

@@ -92,25 +92,31 @@ public enum OMPUsageParser {
         if k.contains("antigravity") || k.contains("agy") {
             let agyMetrics = ["omp-agy-gemini-5h", "omp-agy-gemini-7d", "omp-agy-3p-5h", "omp-agy-3p-7d"]
             return !hiddenSet.contains("detailSection:Google Antigravity") &&
+                !hiddenSet.contains("detailSection:Google Antigravity Accounts") &&
                 !agyMetrics.allSatisfy { hiddenSet.contains("metric:\($0)") }
         }
         if k.contains("codex") {
             let codexMetrics = ["omp-codex-0-5h", "omp-codex-0-7d"]
             return !hiddenSet.contains("detailSection:OpenAI Codex") &&
+                !hiddenSet.contains("detailSection:OpenAI Codex Accounts") &&
                 !codexMetrics.allSatisfy { hiddenSet.contains("metric:\($0)") }
         }
         if k.contains("copilot") {
             let copilotMetrics = ["omp-copilot-0-chat", "omp-copilot-0-completions"]
             return !hiddenSet.contains("detailSection:GitHub Copilot") &&
+                !hiddenSet.contains("detailSection:GitHub Copilot Accounts") &&
                 !copilotMetrics.allSatisfy { hiddenSet.contains("metric:\($0)") }
         }
         if k.contains("xai") || k.contains("grok") {
-            let xaiMetrics = ["omp-xai-0-7d"]
-            return !hiddenSet.contains("detailSection:xAI Grok") &&
-                !xaiMetrics.allSatisfy { hiddenSet.contains("metric:\($0)") }
+            let hasHiddenXAI = hiddenSet.contains("detailSection:xAI Grok") ||
+                hiddenSet.contains("detailSection:xAI Grok Accounts") ||
+                hiddenSet.contains("metric:omp-xai-0-7d") ||
+                hiddenSet.contains { $0.hasPrefix("metric:omp-xai-") }
+            return !hasHiddenXAI
         }
         if k.contains("anthropic") || k.contains("claude") {
-            return !hiddenSet.contains("detailSection:Anthropic Claude")
+            return !hiddenSet.contains("detailSection:Anthropic Claude") &&
+                !hiddenSet.contains("detailSection:Anthropic Claude Accounts")
         }
         return true
     }
@@ -299,10 +305,20 @@ public enum OMPUsageParser {
             for limit in report.limits ?? [] {
                 guard let norm = self.normalizeAmount(limit) else { continue }
                 let resetsAt = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
+                let lName = limit.label ?? "xAI Grok"
+                let winId = (limit.window?.id ?? "").lowercased()
+                let winMinutes = limit.window?.durationMs.flatMap { dur -> Int? in
+                    guard dur.isFinite, dur > 0, dur < Double(Int.max) * 60_000 else { return nil }
+                    return Int(dur / (60 * 1000))
+                } ?? (winId.contains("5h") ? 300 : (winId.contains("month") ? 43200 : 10080))
                 extraRateWindows.append(NamedRateWindow(
-                    id: "omp-xai-\(reportIndex)-7d",
-                    title: "xAI Grok",
-                    window: RateWindow(usedPercent: norm.usedPercent, windowMinutes: 10080, resetsAt: resetsAt, resetDescription: nil)))
+                    id: "omp-xai-\(reportIndex)-\(limit.id)",
+                    title: lName,
+                    window: RateWindow(
+                        usedPercent: norm.usedPercent,
+                        windowMinutes: winMinutes,
+                        resetsAt: resetsAt,
+                        resetDescription: nil)))
             }
         }
 
@@ -499,13 +515,10 @@ public enum OMPUsageParser {
         let agyCapCount = response.capacity?["google-antigravity"]?.first.map { Int($0.accounts) } ?? 0
         let agyWithoutUsageCount = response.accountsWithoutUsage?.filter { $0.provider == "google-antigravity" }.count ?? 0
         let totalAgyAccounts = max(agyReports.count + agyWithoutUsageCount, agyCapCount)
-        let agyTitle: String = if totalAgyAccounts > agyReports.count, agyReports.count > 0 {
-            "Google Antigravity (\(totalAgyAccounts) accounts)"
-        } else if agyReports.count > 0 {
-            "Google Antigravity (\(agyReports.count) accounts)"
-        } else {
-            "Google Antigravity"
+        if totalAgyAccounts > 0, let countRow = self.makeRow(id: "agy-account-count", label: "Connected Accounts", value: "\(totalAgyAccounts)") {
+            agyRows.insert(countRow, at: 0)
         }
+        let agyTitle = "Google Antigravity"
         if let agySection = self.makeSection(title: agyTitle, rows: agyRows) {
             detailSections.append(agySection)
         }
@@ -576,7 +589,7 @@ public enum OMPUsageParser {
                 let lName = limit.label ?? "Weekly Credits"
                 let progress = try? ProviderDetailSection.Row.Progress(used: max(0.1, norm.usedPercent), total: 100)
                 if let row = self.makeRow(
-                    id: "xai-\(lName)",
+                    id: "xai-\(limit.id)",
                     label: lName,
                     value: "\(self.safePercentInt(from: norm.remainingPercent))% left" + (resetDesc.map { " (\($0))" } ?? ""),
                     secondaryValue: email,
@@ -766,9 +779,10 @@ public enum OMPUsageParser {
                 $0.provider.lowercased() == target || (target == "agy" && $0.provider == "google-antigravity")
             }.count ?? 0
             let totalAccounts = max(matchingReports.count + withoutUsageCount, providerCapAccounts)
-            let sectionTitle = totalAccounts > matchingReports.count
-                ? "\(self.displayNameForProvider(target)) Accounts (\(totalAccounts))"
-                : "\(self.displayNameForProvider(target)) Accounts (\(matchingReports.count))"
+            if totalAccounts > matchingReports.count, let countRow = self.makeRow(id: "sub-account-count", label: "Connected Accounts", value: "\(totalAccounts)") {
+                acctRows.insert(countRow, at: 0)
+            }
+            let sectionTitle = "\(self.displayNameForProvider(target)) Accounts"
             if let acctSection = self.makeSection(title: sectionTitle, rows: acctRows) {
                 detailSections.append(acctSection)
             }
