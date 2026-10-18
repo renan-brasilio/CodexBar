@@ -70,14 +70,10 @@ public enum OMPUsageParser {
         }
     }
 
-    public static func normalizeAmount(_ limit: OMPLimit) -> (usedPercent: Double, remainingPercent: Double, summaryText: String) {
+    public static func normalizeAmount(_ limit: OMPLimit) -> (usedPercent: Double, remainingPercent: Double, summaryText: String)? {
         guard let amount = limit.amount else {
-            return (0, 100, "")
+            return nil
         }
-
-        let rawUsed = amount.used ?? (amount.usedFraction.map { $0 * 100 } ?? 0)
-        let limitVal = amount.limit ?? 0
-        let used = rawUsed.isFinite ? max(0, rawUsed) : 0
 
         let usedPercent: Double
         let remPercent: Double
@@ -85,17 +81,28 @@ public enum OMPUsageParser {
         if let frac = amount.usedFraction, frac.isFinite {
             usedPercent = min(100, max(0, frac * 100))
             remPercent = max(0, 100 - usedPercent)
-        } else if limitVal > 0 {
-            usedPercent = min(100, max(0, (used / limitVal) * 100))
+        } else if let remFrac = amount.remainingFraction, remFrac.isFinite {
+            remPercent = min(100, max(0, remFrac * 100))
+            usedPercent = max(0, 100 - remPercent)
+        } else if let rawUsed = amount.used, rawUsed.isFinite, let limitVal = amount.limit, limitVal > 0 {
+            usedPercent = min(100, max(0, (rawUsed / limitVal) * 100))
             remPercent = max(0, 100 - usedPercent)
+        } else if let rawRem = amount.remaining, rawRem.isFinite, let limitVal = amount.limit, limitVal > 0 {
+            remPercent = min(100, max(0, (rawRem / limitVal) * 100))
+            usedPercent = max(0, 100 - remPercent)
+        } else if let rawUsed = amount.used, rawUsed.isFinite {
+            usedPercent = min(100, max(0, rawUsed))
+            remPercent = max(0, 100 - usedPercent)
+        } else if let rawRem = amount.remaining, rawRem.isFinite {
+            remPercent = min(100, max(0, rawRem))
+            usedPercent = max(0, 100 - remPercent)
         } else {
-            usedPercent = min(100, max(0, used))
-            remPercent = max(0, 100 - usedPercent)
+            return nil
         }
 
-        let summary: String = if limitVal > 0, (amount.unit ?? "").lowercased().contains("request") {
+        let summary: String = if let limitVal = amount.limit, limitVal > 0, (amount.unit ?? "").lowercased().contains("request"), let used = amount.used {
             "\(Int(used))/\(Int(limitVal)) requests"
-        } else if let rem = amount.remaining, rem.isFinite {
+        } else if let rem = amount.remaining, rem.isFinite, (amount.unit ?? "").lowercased() == "percent" || amount.limit == nil || amount.limit == 100 {
             "\(self.safePercentInt(from: rem))% left"
         } else {
             "\(self.safePercentInt(from: remPercent))% left"
@@ -105,7 +112,6 @@ public enum OMPUsageParser {
     }
 
     private struct LimitEntry {
-        let emailShort: String
         let fullEmail: String
         let used: Double
         let remaining: Double
@@ -130,9 +136,7 @@ public enum OMPUsageParser {
 
         for report in agyReports {
             let email = report.metadata?["email"] ?? report.metadata?["accountId"] ?? "account"
-            let emailShort = email.components(separatedBy: "@").first ?? email
             var seenGroupsForAccount = Set<String>()
-
             for limit in report.limits ?? [] {
                 let winId = (limit.window?.id ?? "").lowercased()
                 let lid = limit.id.lowercased()
@@ -153,11 +157,10 @@ public enum OMPUsageParser {
                 guard let groupKey, !seenGroupsForAccount.contains(groupKey) else { continue }
                 seenGroupsForAccount.insert(groupKey)
 
-                let norm = self.normalizeAmount(limit)
+                guard let norm = self.normalizeAmount(limit) else { continue }
                 let resetsAt = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
 
                 agyGroups[groupKey]?.append(LimitEntry(
-                    emailShort: emailShort,
                     fullEmail: email,
                     used: norm.usedPercent,
                     remaining: norm.remainingPercent,
@@ -209,7 +212,7 @@ public enum OMPUsageParser {
         for (reportIndex, report) in copilotReports.enumerated() {
             for limit in report.limits ?? [] {
                 let resetsAt = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
-                let norm = self.normalizeAmount(limit)
+                guard let norm = self.normalizeAmount(limit) else { continue }
                 if limit.id.contains("chat") {
                     extraRateWindows.append(NamedRateWindow(
                         id: "omp-copilot-\(reportIndex)-chat",
@@ -227,7 +230,7 @@ public enum OMPUsageParser {
         let codexReports = response.reports.filter { $0.provider == "openai-codex" }
         for (reportIndex, report) in codexReports.enumerated() {
             for limit in report.limits ?? [] {
-                let norm = self.normalizeAmount(limit)
+                guard let norm = self.normalizeAmount(limit) else { continue }
                 let resetsAt = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
                 let winId = (limit.window?.id ?? "").lowercased()
                 if winId.contains("5h") {
@@ -247,7 +250,7 @@ public enum OMPUsageParser {
         let xaiReports = response.reports.filter { $0.provider == "xai-oauth" }
         for (reportIndex, report) in xaiReports.enumerated() {
             for limit in report.limits ?? [] {
-                let norm = self.normalizeAmount(limit)
+                guard let norm = self.normalizeAmount(limit) else { continue }
                 let resetsAt = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
                 extraRateWindows.append(NamedRateWindow(
                     id: "omp-xai-\(reportIndex)-7d",
@@ -259,7 +262,7 @@ public enum OMPUsageParser {
         let anthropicReports = response.reports.filter { $0.provider == "anthropic" }
         for (reportIndex, report) in anthropicReports.enumerated() {
             for limit in report.limits ?? [] {
-                let norm = self.normalizeAmount(limit)
+                guard let norm = self.normalizeAmount(limit) else { continue }
                 let resetsAt = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
                 let lName = limit.label ?? "Claude Quota"
                 let winId = (limit.window?.id ?? "").lowercased()
@@ -349,7 +352,7 @@ public enum OMPUsageParser {
             let avgRem = entries.map(\.remaining).reduce(0, +) / Double(entries.count)
             let avgUsed = 100 - avgRem
             let resetDesc = entries.compactMap(\.resetsAt).min().map { UsageFormatter.resetDescription(from: $0) }
-            let breakdown = entries.map { "\($0.emailShort): \(self.safePercentInt(from: $0.remaining))%" }.joined(separator: " · ")
+            let breakdown = entries.map { "\($0.fullEmail): \(self.safePercentInt(from: $0.remaining))%" }.joined(separator: " · ")
             let progress = try? ProviderDetailSection.Row.Progress(used: avgUsed, total: 100)
             if let row = self.makeRow(
                 id: "agy-gemini-5h",
@@ -367,7 +370,7 @@ public enum OMPUsageParser {
             let avgRem = entries.map(\.remaining).reduce(0, +) / Double(entries.count)
             let avgUsed = 100 - avgRem
             let resetDesc = entries.compactMap(\.resetsAt).min().map { UsageFormatter.resetDescription(from: $0) }
-            let breakdown = entries.map { "\($0.emailShort): \(self.safePercentInt(from: $0.remaining))%" }.joined(separator: " · ")
+            let breakdown = entries.map { "\($0.fullEmail): \(self.safePercentInt(from: $0.remaining))%" }.joined(separator: " · ")
             let progress = try? ProviderDetailSection.Row.Progress(used: avgUsed, total: 100)
             if let row = self.makeRow(
                 id: "agy-gemini-7d",
@@ -384,7 +387,7 @@ public enum OMPUsageParser {
         if let entries = agyGroups["3p-5h"], !entries.isEmpty {
             let avgRem = entries.map(\.remaining).reduce(0, +) / Double(entries.count)
             let avgUsed = 100 - avgRem
-            let breakdown = entries.map { "\($0.emailShort): \(self.safePercentInt(from: $0.remaining))%" }.joined(separator: " · ")
+            let breakdown = entries.map { "\($0.fullEmail): \(self.safePercentInt(from: $0.remaining))%" }.joined(separator: " · ")
             let progress = try? ProviderDetailSection.Row.Progress(used: avgUsed, total: 100)
             if let row = self.makeRow(
                 id: "agy-3p-5h",
@@ -402,7 +405,7 @@ public enum OMPUsageParser {
             let avgRem = entries.map(\.remaining).reduce(0, +) / Double(entries.count)
             let avgUsed = 100 - avgRem
             let resetDesc = entries.compactMap(\.resetsAt).min().map { UsageFormatter.resetDescription(from: $0) }
-            let breakdown = entries.map { "\($0.emailShort): \(self.safePercentInt(from: $0.remaining))%" }.joined(separator: " · ")
+            let breakdown = entries.map { "\($0.fullEmail): \(self.safePercentInt(from: $0.remaining))%" }.joined(separator: " · ")
             let progress = try? ProviderDetailSection.Row.Progress(used: avgUsed, total: 100)
             if let row = self.makeRow(
                 id: "agy-3p-7d",
@@ -416,7 +419,16 @@ public enum OMPUsageParser {
             }
         }
 
-        let agyTitle = agyReports.count > 0 ? "Google Antigravity (\(agyReports.count) accounts)" : "Google Antigravity"
+        let agyCapCount = response.capacity?["google-antigravity"]?.first.map { Int($0.accounts) } ?? 0
+        let agyWithoutUsageCount = response.accountsWithoutUsage?.filter { $0.provider == "google-antigravity" }.count ?? 0
+        let totalAgyAccounts = max(agyReports.count + agyWithoutUsageCount, agyCapCount)
+        let agyTitle: String = if totalAgyAccounts > agyReports.count, agyReports.count > 0 {
+            "Google Antigravity (\(totalAgyAccounts) accounts)"
+        } else if agyReports.count > 0 {
+            "Google Antigravity (\(agyReports.count) accounts)"
+        } else {
+            "Google Antigravity"
+        }
         if let agySection = self.makeSection(title: agyTitle, rows: agyRows) {
             detailSections.append(agySection)
         }
@@ -428,7 +440,7 @@ public enum OMPUsageParser {
             for limit in report.limits ?? [] {
                 let resets = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
                 let resetDesc = resets.map { UsageFormatter.resetDescription(from: $0) }
-                let norm = self.normalizeAmount(limit)
+                guard let norm = self.normalizeAmount(limit) else { continue }
                 let isExhausted = limit.status?.lowercased() == "exhausted" || norm.usedPercent >= 100
                 let progress = try? ProviderDetailSection.Row.Progress(used: norm.usedPercent, total: 100)
 
@@ -455,7 +467,7 @@ public enum OMPUsageParser {
             let email = report.metadata?["email"] ?? report.metadata?["accountId"] ?? "account"
             let plan = report.metadata?["planType"].map { " (\($0))" } ?? ""
             for limit in report.limits ?? [] {
-                let norm = self.normalizeAmount(limit)
+                guard let norm = self.normalizeAmount(limit) else { continue }
                 let resets = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
                 let resetDesc = resets.map { UsageFormatter.resetDescription(from: $0) }
                 let winName = limit.label ?? limit.id
@@ -481,7 +493,7 @@ public enum OMPUsageParser {
         for report in xaiReports {
             let email = report.metadata?["email"] ?? report.metadata?["accountId"] ?? "account"
             for limit in report.limits ?? [] {
-                let norm = self.normalizeAmount(limit)
+                guard let norm = self.normalizeAmount(limit) else { continue }
                 let resets = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
                 let resetDesc = resets.map { UsageFormatter.resetDescription(from: $0) }
                 let lName = limit.label ?? "Weekly Credits"
@@ -507,7 +519,7 @@ public enum OMPUsageParser {
         for report in anthropicReports {
             let email = report.metadata?["email"] ?? report.metadata?["accountId"] ?? "account"
             for limit in report.limits ?? [] {
-                let norm = self.normalizeAmount(limit)
+                guard let norm = self.normalizeAmount(limit) else { continue }
                 let resets = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
                 let resetDesc = resets.map { UsageFormatter.resetDescription(from: $0) }
                 let lName = limit.label ?? limit.id
@@ -626,7 +638,7 @@ public enum OMPUsageParser {
                 let scopedID = "\(limit.id)-\(reportIndex)"
                 guard !seenLimitIDs.contains(scopedID) else { continue }
                 seenLimitIDs.insert(scopedID)
-                let norm = self.normalizeAmount(limit)
+                guard let norm = self.normalizeAmount(limit) else { continue }
                 let title = limit.label ?? limit.id
                 let resetsAt = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
                 let winMinutes = limit.window?.durationMs.flatMap { dur -> Int? in
@@ -654,7 +666,7 @@ public enum OMPUsageParser {
                     ?? "account"
                 var summaries: [String] = []
                 for limit in report.limits ?? [] {
-                    let norm = self.normalizeAmount(limit)
+                    guard let norm = self.normalizeAmount(limit) else { continue }
                     let lName = limit.label ?? limit.id
                     summaries.append("\(lName): \(self.safePercentInt(from: norm.remainingPercent))% left")
                 }
@@ -666,15 +678,24 @@ public enum OMPUsageParser {
                     acctRows.append(row)
                 }
             }
-            if let acctSection = self.makeSection(title: "\(self.displayNameForProvider(target)) Accounts (\(matchingReports.count))", rows: acctRows) {
+            let providerCapAccounts = response.capacity?[target]?.first.map { Int($0.accounts) }
+                ?? (target == "agy" ? response.capacity?["google-antigravity"]?.first.map { Int($0.accounts) } : nil)
+                ?? 0
+            let withoutUsageCount = response.accountsWithoutUsage?.filter {
+                $0.provider.lowercased() == target || (target == "agy" && $0.provider == "google-antigravity")
+            }.count ?? 0
+            let totalAccounts = max(matchingReports.count + withoutUsageCount, providerCapAccounts)
+            let sectionTitle = totalAccounts > matchingReports.count
+                ? "\(self.displayNameForProvider(target)) Accounts (\(totalAccounts))"
+                : "\(self.displayNameForProvider(target)) Accounts (\(matchingReports.count))"
+            if let acctSection = self.makeSection(title: sectionTitle, rows: acctRows) {
                 detailSections.append(acctSection)
             }
         }
 
-        let firstEmail = matchingReports.first?.metadata?["email"]
         let identity = ProviderIdentitySnapshot(
             providerID: .omp,
-            accountEmail: firstEmail,
+            accountEmail: nil,
             accountOrganization: nil,
             loginMethod: "omp",
             accountID: target)
@@ -705,7 +726,7 @@ public enum OMPUsageParser {
         defaultMinutes: Int?,
         fallbackReset: Date?) -> RateWindow?
     {
-        let norm = self.normalizeAmount(limit)
+        guard let norm = self.normalizeAmount(limit) else { return nil }
         let winId = (limit.window?.id ?? "").lowercased()
         let inferredMinutes: Int? = if winId.contains("month") {
             43200

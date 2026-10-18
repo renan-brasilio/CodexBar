@@ -304,6 +304,96 @@ struct OMPProviderTests {
     }
 
     @Test
+    func `omp usage parser derives usage from remaining fields and skips unknown limits with missing amount`() throws {
+        let json = """
+        {
+          "reports": [
+            {
+              "provider": "openai-codex",
+              "limits": [
+                {
+                  "id": "codex:remaining-fraction",
+                  "label": "Remaining Only",
+                  "window": { "id": "5h" },
+                  "amount": { "remainingFraction": 0.8 }
+                },
+                {
+                  "id": "codex:missing-amount",
+                  "label": "No Amount",
+                  "window": { "id": "7d" }
+                }
+              ]
+            }
+          ]
+        }
+        """
+        let snapshot = try OMPUsageParser.parse(jsonString: json, subprovider: "all")
+        let extra = try #require(snapshot.extraRateWindows)
+        // remainingFraction 0.8 should derive usedPercent = 20.0
+        let remLimit = try #require(extra.first { $0.id.contains("5h") })
+        #expect(abs(remLimit.window.usedPercent - 20.0) < 0.001)
+        // missing-amount limit should be completely skipped, not treated as 0% used
+        #expect(!extra.contains { $0.id.contains("7d") })
+    }
+
+    @Test
+    func `omp usage parser preserves full email in breakdown for privacy redactor`() throws {
+        let json = """
+        {
+          "reports": [
+            {
+              "provider": "google-antigravity",
+              "metadata": { "email": "testuser@gmail.com" },
+              "limits": [
+                {
+                  "id": "gemini:5h",
+                  "window": { "id": "5h" },
+                  "amount": { "used": 10, "limit": 100 }
+                }
+              ]
+            }
+          ]
+        }
+        """
+        let snapshot = try OMPUsageParser.parse(jsonString: json, subprovider: "all")
+        let agySection = try #require(snapshot.details.first { $0.title?.contains("Antigravity") == true })
+        let row = try #require(agySection.rows.first)
+        // The breakdown in secondaryValue must preserve the full email "testuser@gmail.com" so email redactors match it
+        let secondary = try #require(row.secondaryValue)
+        #expect(secondary.contains("testuser@gmail.com"))
+        #expect(!secondary.hasPrefix("testuser:"))
+    }
+
+    @Test
+    func `omp usage parser keeps aggregate identity neutral without subprovider email`() throws {
+        let json = """
+        {
+          "capacity": {
+            "google-antigravity": [
+              { "window": "5h", "accounts": 4, "usedAccounts": 1, "remainingAccounts": 3 }
+            ]
+          },
+          "reports": [
+            {
+              "provider": "google-antigravity",
+              "metadata": { "email": "user1@gmail.com" },
+              "limits": [
+                { "id": "gemini:5h", "window": { "id": "5h" }, "amount": { "used": 10, "limit": 100 } }
+              ]
+            }
+          ]
+        }
+        """
+        let snapshot = try OMPUsageParser.parse(jsonString: json, subprovider: "agy")
+        // Snapshot identity must remain neutral across multi-account aggregates
+        #expect(snapshot.identity?.accountEmail == nil)
+        #expect(snapshot.identity?.accountID == "google-antigravity")
+        // Section title must reflect total capacity accounts (4), not just 1 report
+        let agySection = try #require(snapshot.details.first { $0.title?.contains("Accounts") == true })
+        #expect(agySection.title?.contains("(4)") == true)
+    }
+
+    @Test
     func `omp settings snapshot persists subprovider selection`() {
         let suite = "OMPProviderTests-settings-\(UUID().uuidString)"
         let settings = testSettingsStore(suiteName: suite)
