@@ -5,7 +5,10 @@ extension ProviderConfig {
     var fetchIdentityConfig: Self {
         var copy = self
         copy.accentColor = nil
-        copy.hiddenUsageItemIDs = nil
+        // Provider-specific by design: OMP usage aggregation dynamically reflects active visible items.
+        if self.id != ProviderInstanceID.omp {
+            copy.hiddenUsageItemIDs = nil
+        }
         copy.modelRateLimits = nil
         if let data = copy.tokenAccounts {
             copy.tokenAccounts = ProviderTokenAccountData(

@@ -493,6 +493,68 @@ struct OMPProviderTests {
     }
 
     @Test
+    func `omp usage parser formats non-email account IDs as redactable email patterns`() throws {
+        let json = """
+        {
+          "reports": [
+            {
+              "provider": "github-copilot",
+              "metadata": { "accountId": "octocat" },
+              "limits": [
+                { "id": "copilot:chat", "amount": { "used": 5, "limit": 100 } }
+              ]
+            }
+          ]
+        }
+        """
+        let snapshot = try OMPUsageParser.parse(jsonString: json, subprovider: "all")
+        let section = try #require(snapshot.details.first { $0.title == "GitHub Copilot" })
+        let row = try #require(section.rows.first)
+        let secondary = try #require(row.secondaryValue)
+        // Must be formatted as octocat@github.com so email redactors can match and redact it
+        #expect(secondary.contains("octocat@github.com"))
+        #expect(!secondary.hasPrefix("octocat ·"))
+    }
+
+    @Test
+    func `omp usage parser keeps xAI active when one limit is hidden but another remains visible`() throws {
+        let json = """
+        {
+          "capacity": {
+            "xai-oauth": [
+              { "window": "7d", "accounts": 1, "usedAccounts": 0.25, "remainingAccounts": 0.75 }
+            ]
+          },
+          "reports": [
+            {
+              "provider": "xai-oauth",
+              "limits": [
+                { "id": "xai:grokbot", "window": { "id": "7d" }, "amount": { "used": 10, "limit": 100 } },
+                { "id": "xai:supergrok", "window": { "id": "7d" }, "amount": { "used": 25, "limit": 100 } }
+              ]
+            }
+          ]
+        }
+        """
+        // Hide only grokbot, keeping supergrok visible
+        let hidden = ["metric:omp-xai-0-xai:grokbot"]
+        let snapshot = try OMPUsageParser.parse(jsonString: json, subprovider: "all", hiddenItemIDs: hidden)
+        // xAI must remain active because supergrok is still visible!
+        let secondary = try #require(snapshot.secondary)
+        #expect(secondary.usedPercent == 25.0)
+        #expect(secondary.resetDescription?.contains("1 Grok") == true)
+    }
+
+    @Test
+    func `omp provider config preserves hiddenUsageItemIDs for fetch identity`() {
+        let config = ProviderConfig(id: ProviderInstanceID.omp, hiddenUsageItemIDs: ["metric:primary"])
+        #expect(config.fetchIdentityConfig.hiddenUsageItemIDs == ["metric:primary"])
+
+        let other = ProviderConfig(id: ProviderInstanceID.codex, hiddenUsageItemIDs: ["metric:primary"])
+        #expect(other.fetchIdentityConfig.hiddenUsageItemIDs == nil)
+    }
+
+    @Test
     func `omp provider descriptor marks history as unavailable`() {
         let descriptor = ProviderDescriptorRegistry.descriptor(for: .omp)
         #expect(descriptor.history == .unavailable)

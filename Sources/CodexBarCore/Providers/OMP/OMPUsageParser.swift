@@ -82,10 +82,27 @@ public enum OMPUsageParser {
         if k.contains("anthropic") || k.contains("claude") { return "Claude" }
         return key
     }
+    // Provider-specific by design: Formats non-email account IDs as verifiable email patterns for privacy redactor.
+    private static func redactableAccountID(_ rawID: String, provider: String) -> String {
+        if rawID.contains("@") {
+            return rawID
+        }
+        let domain: String = if provider.contains("copilot") || provider.contains("github") {
+            "github.com"
+        } else if provider.contains("codex") || provider.contains("openai") {
+            "openai.com"
+        } else if provider.contains("xai") || provider.contains("grok") {
+            "x.ai"
+        } else {
+            "omp.local"
+        }
+        return "\(rawID)@\(domain)"
+    }
 
     // Provider-specific by design: This checks whether a subprovider's metrics or sections are hidden.
     private static func isProviderActive(
         key: String,
+        xaiReports: [OMPAccountReport] = [],
         hiddenSet: Set<String>) -> Bool
     {
         let k = key.lowercased()
@@ -108,11 +125,16 @@ public enum OMPUsageParser {
                 !copilotMetrics.allSatisfy { hiddenSet.contains("metric:\($0)") }
         }
         if k.contains("xai") || k.contains("grok") {
-            let hasHiddenXAI = hiddenSet.contains("detailSection:xAI Grok") ||
-                hiddenSet.contains("detailSection:xAI Grok Accounts") ||
-                hiddenSet.contains("metric:omp-xai-0-7d") ||
-                hiddenSet.contains { $0.hasPrefix("metric:omp-xai-") }
-            return !hasHiddenXAI
+            if hiddenSet.contains("detailSection:xAI Grok") || hiddenSet.contains("detailSection:xAI Grok Accounts") {
+                return false
+            }
+            let xaiMetricIDs = xaiReports.enumerated().flatMap { reportIndex, report in
+                (report.limits ?? []).map { "metric:omp-xai-\(reportIndex)-\($0.id)" }
+            }
+            if !xaiMetricIDs.isEmpty {
+                return !xaiMetricIDs.allSatisfy { hiddenSet.contains($0) }
+            }
+            return !hiddenSet.contains("metric:omp-xai-0-7d")
         }
         if k.contains("anthropic") || k.contains("claude") {
             return !hiddenSet.contains("detailSection:Anthropic Claude") &&
@@ -351,7 +373,7 @@ public enum OMPUsageParser {
         var contributingWeeklyProviders: [String: Int] = [:]
 
         for (providerKey, windows) in response.capacity ?? [:] {
-            guard self.isProviderActive(key: providerKey, hiddenSet: hiddenSet) else { continue }
+            guard self.isProviderActive(key: providerKey, xaiReports: xaiReports, hiddenSet: hiddenSet) else { continue }
 
             for cap in windows {
                 let winName = cap.window.lowercased()
@@ -376,7 +398,7 @@ public enum OMPUsageParser {
         var minWeeklyResetDate: Date?
 
         for report in response.reports {
-            guard self.isProviderActive(key: report.provider, hiddenSet: hiddenSet) else { continue }
+            guard self.isProviderActive(key: report.provider, xaiReports: xaiReports, hiddenSet: hiddenSet) else { continue }
             for limit in report.limits ?? [] {
                 guard let window = limit.window,
                        let resetsAtMs = window.resetsAt,
@@ -526,7 +548,8 @@ public enum OMPUsageParser {
         // Section: GitHub Copilot
         var copilotRows: [ProviderDetailSection.Row] = []
         for report in copilotReports {
-            let accountID = report.metadata?["accountId"] ?? "account"
+            let rawAccountID = report.metadata?["email"] ?? report.metadata?["accountId"] ?? "account"
+            let accountID = self.redactableAccountID(rawAccountID, provider: "github-copilot")
             for limit in report.limits ?? [] {
                 let resets = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
                 let resetDesc = resets.map { UsageFormatter.resetDescription(from: $0) }
@@ -554,7 +577,8 @@ public enum OMPUsageParser {
         // Section: OpenAI Codex
         var codexRows: [ProviderDetailSection.Row] = []
         for report in codexReports {
-            let email = report.metadata?["email"] ?? report.metadata?["accountId"] ?? "account"
+            let rawEmail = report.metadata?["email"] ?? report.metadata?["accountId"] ?? "account"
+            let email = self.redactableAccountID(rawEmail, provider: "openai-codex")
             let plan = report.metadata?["planType"].map { " (\($0))" } ?? ""
             for limit in report.limits ?? [] {
                 guard let norm = self.normalizeAmount(limit) else { continue }
@@ -581,7 +605,8 @@ public enum OMPUsageParser {
         // Section: xAI Grok
         var xaiRows: [ProviderDetailSection.Row] = []
         for report in xaiReports {
-            let email = report.metadata?["email"] ?? report.metadata?["accountId"] ?? "account"
+            let rawEmail = report.metadata?["email"] ?? report.metadata?["accountId"] ?? "account"
+            let email = self.redactableAccountID(rawEmail, provider: "xai-oauth")
             for limit in report.limits ?? [] {
                 guard let norm = self.normalizeAmount(limit) else { continue }
                 let resets = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
@@ -607,7 +632,8 @@ public enum OMPUsageParser {
         // Section: Anthropic Claude
         var anthropicRows: [ProviderDetailSection.Row] = []
         for report in anthropicReports {
-            let email = report.metadata?["email"] ?? report.metadata?["accountId"] ?? "account"
+            let rawEmail = report.metadata?["email"] ?? report.metadata?["accountId"] ?? "account"
+            let email = self.redactableAccountID(rawEmail, provider: "anthropic")
             for limit in report.limits ?? [] {
                 guard let norm = self.normalizeAmount(limit) else { continue }
                 let resets = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
@@ -755,9 +781,10 @@ public enum OMPUsageParser {
         if !matchingReports.isEmpty {
             var acctRows: [ProviderDetailSection.Row] = []
             for report in matchingReports {
-                let accountID = report.metadata?["email"]
+                let rawAccountID = report.metadata?["email"]
                     ?? report.metadata?["accountId"]
                     ?? "account"
+                let accountID = self.redactableAccountID(rawAccountID, provider: target)
                 var summaries: [String] = []
                 for limit in report.limits ?? [] {
                     guard let norm = self.normalizeAmount(limit) else { continue }

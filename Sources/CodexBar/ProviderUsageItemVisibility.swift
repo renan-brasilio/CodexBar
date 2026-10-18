@@ -284,7 +284,9 @@ extension SettingsStore {
         for provider: UsageProvider)
     {
         let rawIDs = hiddenItemIDs.map(\.rawValue).sorted()
-        self.updateProviderConfig(provider: provider, affectsBackgroundWork: false) { entry in
+        // Provider-specific by design: OMP usage aggregation dynamically reflects active visible items.
+        let affectsBackground = provider == .omp
+        self.updateProviderConfig(provider: provider, affectsBackgroundWork: affectsBackground) { entry in
             entry.hiddenUsageItemIDs = rawIDs
         }
     }
