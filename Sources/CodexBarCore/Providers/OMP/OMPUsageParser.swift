@@ -4,22 +4,24 @@ public enum OMPUsageParser {
     public static func parse(
         jsonString: String,
         subprovider: String = "all",
+        hiddenItemIDs: [String] = [],
         now: Date = Date()) throws -> UsageSnapshot
     {
         guard let data = jsonString.data(using: .utf8) else {
             throw OMPUsageError.parseFailed("Invalid UTF-8 in OMP usage output")
         }
-        return try self.parse(data: data, subprovider: subprovider, now: now)
+        return try self.parse(data: data, subprovider: subprovider, hiddenItemIDs: hiddenItemIDs, now: now)
     }
 
     public static func parse(
         data: Data,
         subprovider: String = "all",
+        hiddenItemIDs: [String] = [],
         now: Date = Date()) throws -> UsageSnapshot
     {
         do {
             let response = try JSONDecoder().decode(OMPUsageResponse.self, from: data)
-            return self.makeSnapshot(response: response, subprovider: subprovider, now: now)
+            return self.makeSnapshot(response: response, subprovider: subprovider, hiddenItemIDs: hiddenItemIDs, now: now)
         } catch let error as DecodingError {
             throw OMPUsageError.parseFailed("Malformed OMP usage JSON payload: \(error.localizedDescription)")
         }
@@ -28,11 +30,12 @@ public enum OMPUsageParser {
     public static func makeSnapshot(
         response: OMPUsageResponse,
         subprovider: String,
+        hiddenItemIDs: [String] = [],
         now: Date) -> UsageSnapshot
     {
         let normalized = self.normalizeSubproviderKey(subprovider)
         if normalized == "all" || normalized.isEmpty {
-            return self.makeCombinedSnapshot(response: response, now: now)
+            return self.makeCombinedSnapshot(response: response, hiddenItemIDs: hiddenItemIDs, now: now)
         } else {
             return self.makeSubproviderSnapshot(response: response, target: normalized, now: now)
         }
@@ -69,6 +72,49 @@ public enum OMPUsageParser {
         default: return key
         }
     }
+    // Provider-specific by design: This maps OMP subproviders to short display names.
+    private static func shortNameForProvider(_ key: String) -> String {
+        let k = key.lowercased()
+        if k.contains("antigravity") || k.contains("agy") { return "AGY" }
+        if k.contains("codex") { return "Codex" }
+        if k.contains("copilot") { return "Copilot" }
+        if k.contains("xai") || k.contains("grok") { return "Grok" }
+        if k.contains("anthropic") || k.contains("claude") { return "Claude" }
+        return key
+    }
+
+    // Provider-specific by design: This checks whether a subprovider's metrics or sections are hidden.
+    private static func isProviderActive(
+        key: String,
+        hiddenSet: Set<String>) -> Bool
+    {
+        let k = key.lowercased()
+        if k.contains("antigravity") || k.contains("agy") {
+            let agyMetrics = ["omp-agy-gemini-5h", "omp-agy-gemini-7d", "omp-agy-3p-5h", "omp-agy-3p-7d"]
+            return !hiddenSet.contains("detailSection:Google Antigravity") &&
+                !agyMetrics.allSatisfy { hiddenSet.contains("metric:\($0)") }
+        }
+        if k.contains("codex") {
+            let codexMetrics = ["omp-codex-0-5h", "omp-codex-0-7d"]
+            return !hiddenSet.contains("detailSection:OpenAI Codex") &&
+                !codexMetrics.allSatisfy { hiddenSet.contains("metric:\($0)") }
+        }
+        if k.contains("copilot") {
+            let copilotMetrics = ["omp-copilot-0-chat", "omp-copilot-0-completions"]
+            return !hiddenSet.contains("detailSection:GitHub Copilot") &&
+                !copilotMetrics.allSatisfy { hiddenSet.contains("metric:\($0)") }
+        }
+        if k.contains("xai") || k.contains("grok") {
+            let xaiMetrics = ["omp-xai-0-7d"]
+            return !hiddenSet.contains("detailSection:xAI Grok") &&
+                !xaiMetrics.allSatisfy { hiddenSet.contains("metric:\($0)") }
+        }
+        if k.contains("anthropic") || k.contains("claude") {
+            return !hiddenSet.contains("detailSection:Anthropic Claude")
+        }
+        return true
+    }
+
 
     public static func normalizeAmount(_ limit: OMPLimit) -> (usedPercent: Double, remainingPercent: Double, summaryText: String)? {
         guard let amount = limit.amount else {
@@ -121,6 +167,7 @@ public enum OMPUsageParser {
 
     private static func makeCombinedSnapshot(
         response: OMPUsageResponse,
+        hiddenItemIDs: [String] = [],
         now: Date) -> UsageSnapshot
     {
         let nowMs = now.timeIntervalSince1970 * 1000
@@ -278,49 +325,79 @@ public enum OMPUsageParser {
         }
 
         // 3. Compute Aggregate 5h and Weekly Windows using response.capacity totals
+        let hiddenSet = Set(hiddenItemIDs)
         var total5hCapacityAccounts: Double = 0
         var used5hCapacityAccounts: Double = 0
         var totalWeeklyCapacityAccounts: Double = 0
         var usedWeeklyCapacityAccounts: Double = 0
 
-        for (_, windows) in response.capacity ?? [:] {
+        var contributing5hProviders: [String: Int] = [:]
+        var contributingWeeklyProviders: [String: Int] = [:]
+
+        for (providerKey, windows) in response.capacity ?? [:] {
+            guard self.isProviderActive(key: providerKey, hiddenSet: hiddenSet) else { continue }
+
             for cap in windows {
                 let winName = cap.window.lowercased()
                 let dur = cap.durationMs ?? 0
+                let accts = Int(cap.accounts)
                 if winName.hasPrefix("5h") || dur == 18_000_000 {
                     total5hCapacityAccounts += cap.accounts
                     used5hCapacityAccounts += cap.usedAccounts
+                    let normKey = self.shortNameForProvider(providerKey)
+                    contributing5hProviders[normKey] = max(contributing5hProviders[normKey] ?? 0, accts)
                 } else if winName.contains("7d") || winName.contains("week") || dur == 604_800_000 {
                     totalWeeklyCapacityAccounts += cap.accounts
                     usedWeeklyCapacityAccounts += cap.usedAccounts
+                    let normKey = self.shortNameForProvider(providerKey)
+                    contributingWeeklyProviders[normKey] = max(contributingWeeklyProviders[normKey] ?? 0, accts)
                 }
             }
         }
 
-        // Earliest resets across ALL contributing providers
+        // Earliest resets across ALL contributing active providers
         var min5hResetDate: Date?
         var minWeeklyResetDate: Date?
 
         for report in response.reports {
+            guard self.isProviderActive(key: report.provider, hiddenSet: hiddenSet) else { continue }
             for limit in report.limits ?? [] {
                 guard let window = limit.window,
-                      let resetsAtMs = window.resetsAt,
-                      resetsAtMs > nowMs
-                else { continue }
-                let resetDate = Date(timeIntervalSince1970: resetsAtMs / 1000)
-                let winId = (window.id ?? "").lowercased()
-                let dur = window.durationMs ?? 0
-                if winId.contains("5h") || dur == 18_000_000 {
-                    if min5hResetDate == nil || resetDate < min5hResetDate! {
-                        min5hResetDate = resetDate
-                    }
-                } else if winId.contains("week") || winId.contains("7d") || dur == 604_800_000 {
-                    if minWeeklyResetDate == nil || resetDate < minWeeklyResetDate! {
-                        minWeeklyResetDate = resetDate
-                    }
+                       let resetsAtMs = window.resetsAt,
+                       resetsAtMs > nowMs
+                 else { continue }
+                 let resetDate = Date(timeIntervalSince1970: resetsAtMs / 1000)
+                 let winId = (window.id ?? "").lowercased()
+                 let dur = window.durationMs ?? 0
+                 if winId.contains("5h") || dur == 18_000_000 {
+                     if min5hResetDate == nil || resetDate < min5hResetDate! {
+                         min5hResetDate = resetDate
+                     }
+                 } else if winId.contains("week") || winId.contains("7d") || dur == 604_800_000 {
+                     if minWeeklyResetDate == nil || resetDate < minWeeklyResetDate! {
+                         minWeeklyResetDate = resetDate
+                     }
+                 }
+             }
+         }
+
+        func makeSummaryLabel(providers: [String: Int], fallback: String) -> String {
+            guard !providers.isEmpty else { return fallback }
+            let order = ["AGY", "Codex", "Copilot", "Grok", "Claude"]
+            var parts: [String] = []
+            for name in order {
+                if let count = providers[name], count > 0 {
+                    parts.append("\(count) \(name)")
                 }
             }
+            for (name, count) in providers where !order.contains(name) && count > 0 {
+                parts.append("\(count) \(name)")
+            }
+            return parts.isEmpty ? fallback : parts.joined(separator: " + ")
         }
+
+        let summary5h = makeSummaryLabel(providers: contributing5hProviders, fallback: "5-Hour")
+        let summaryWeekly = makeSummaryLabel(providers: contributingWeeklyProviders, fallback: "Weekly")
 
         // Construct 5h aggregate window only when contributing quota exists
         var primaryWindow: RateWindow?
@@ -330,7 +407,7 @@ public enum OMPUsageParser {
                 usedPercent: usedPercent,
                 windowMinutes: 300,
                 resetsAt: min5hResetDate,
-                resetDescription: nil)
+                resetDescription: summary5h)
         }
 
         var secondaryWindow: RateWindow?
@@ -340,7 +417,7 @@ public enum OMPUsageParser {
                 usedPercent: usedPercent,
                 windowMinutes: 10080,
                 resetsAt: minWeeklyResetDate,
-                resetDescription: nil)
+                resetDescription: summaryWeekly)
         }
 
         // 4. Detail sections grouped by Provider & Limit
@@ -605,15 +682,19 @@ public enum OMPUsageParser {
             }
         }
 
+        let providerShort = self.shortNameForProvider(target)
+        let subproviderAccounts = Int(primary5hCap?.accounts ?? weeklyCap?.accounts ?? Double(matchingReports.count))
+        let subproviderSummary = subproviderAccounts > 0 ? "\(subproviderAccounts) \(providerShort)" : providerShort
+
         var primaryWindow: RateWindow?
         if let cap = primary5hCap, cap.accounts > 0 {
             primaryWindow = RateWindow(
                 usedPercent: min(100, max(0, (cap.usedAccounts / cap.accounts) * 100)),
                 windowMinutes: 300,
                 resetsAt: min5hResetDate,
-                resetDescription: nil)
+                resetDescription: "\(subproviderSummary) (5h)")
         } else if let firstLimit = self.findFirstLimit(matchingReports: matchingReports, windowPrefix: "5h") {
-            primaryWindow = self.rateWindowFromLimit(firstLimit, defaultMinutes: 300, fallbackReset: min5hResetDate)
+            primaryWindow = self.rateWindowFromLimit(firstLimit, defaultMinutes: 300, fallbackReset: min5hResetDate, resetDesc: "\(subproviderSummary) (5h)")
         }
 
         var secondaryWindow: RateWindow?
@@ -622,13 +703,13 @@ public enum OMPUsageParser {
                 usedPercent: min(100, max(0, (cap.usedAccounts / cap.accounts) * 100)),
                 windowMinutes: 10080,
                 resetsAt: minWeeklyResetDate,
-                resetDescription: nil)
+                resetDescription: "\(subproviderSummary) (Weekly)")
         } else if let firstLimit = self.findFirstLimit(matchingReports: matchingReports, windowPrefix: "week")
             ?? self.findFirstLimit(matchingReports: matchingReports, windowPrefix: "7d")
         {
-            secondaryWindow = self.rateWindowFromLimit(firstLimit, defaultMinutes: 10080, fallbackReset: minWeeklyResetDate)
+            secondaryWindow = self.rateWindowFromLimit(firstLimit, defaultMinutes: 10080, fallbackReset: minWeeklyResetDate, resetDesc: "\(subproviderSummary) (Weekly)")
         } else if let firstLimit = self.findFirstLimit(matchingReports: matchingReports, windowPrefix: "month") {
-            secondaryWindow = self.rateWindowFromLimit(firstLimit, defaultMinutes: 43200, fallbackReset: minWeeklyResetDate)
+            secondaryWindow = self.rateWindowFromLimit(firstLimit, defaultMinutes: 43200, fallbackReset: minWeeklyResetDate, resetDesc: "\(subproviderSummary) (Monthly)")
         }
 
         var extraRateWindows: [NamedRateWindow] = []
@@ -724,7 +805,8 @@ public enum OMPUsageParser {
     private static func rateWindowFromLimit(
         _ limit: OMPLimit,
         defaultMinutes: Int?,
-        fallbackReset: Date?) -> RateWindow?
+        fallbackReset: Date?,
+        resetDesc: String? = nil) -> RateWindow?
     {
         guard let norm = self.normalizeAmount(limit) else { return nil }
         let winId = (limit.window?.id ?? "").lowercased()
@@ -746,7 +828,7 @@ public enum OMPUsageParser {
             usedPercent: norm.usedPercent,
             windowMinutes: winMinutes,
             resetsAt: resetsAt,
-            resetDescription: nil)
+            resetDescription: resetDesc)
     }
     private static func safePercentInt(from value: Double) -> Int {
         guard value.isFinite, !value.isNaN else { return 0 }

@@ -251,7 +251,60 @@ struct OMPProviderTests {
 
         let labels = ProviderDescriptorRegistry.descriptor(for: .omp).presentation
             .rateWindowLabels(metadata: ProviderDescriptorRegistry.descriptor(for: .omp).metadata, snapshot: filtered)
-        #expect(labels.secondary == "Monthly")
+        #expect(labels.secondary.contains("Monthly"))
+    }
+
+    @Test
+    func `omp usage parser reflects active usable items in combined capacity and label`() throws {
+        let json = """
+        {
+          "capacity": {
+            "google-antigravity": [
+              { "window": "5h", "accounts": 4, "usedAccounts": 1.8, "remainingAccounts": 2.2 }
+            ],
+            "openai-codex": [
+              { "window": "5h", "accounts": 1, "usedAccounts": 0.35, "remainingAccounts": 0.65 }
+            ],
+            "xai-oauth": [
+              { "window": "5h", "accounts": 1, "usedAccounts": 0.5, "remainingAccounts": 0.5 }
+            ]
+          },
+          "reports": [
+            {
+              "provider": "google-antigravity",
+              "metadata": { "email": "user@gmail.com" },
+              "limits": [
+                { "id": "gemini:5h", "window": { "id": "5h" }, "amount": { "used": 10, "limit": 100 } }
+              ]
+            },
+            {
+              "provider": "openai-codex",
+              "metadata": { "email": "dev@gmail.com" },
+              "limits": [
+                { "id": "codex:5h", "window": { "id": "5h" }, "amount": { "used": 35, "limit": 100 } }
+              ]
+            },
+            {
+              "provider": "xai-oauth",
+              "metadata": { "email": "grok@gmail.com" },
+              "limits": [
+                { "id": "xai:5h", "window": { "id": "5h" }, "amount": { "used": 50, "limit": 100 } }
+              ]
+            }
+          ]
+        }
+        """
+        // Exclude xAI Grok via hiddenItemIDs (simulating unchecking xAI in Settings -> Visible usage items)
+        let hidden = ["metric:omp-xai-0-7d", "detailSection:xAI Grok"]
+        let snapshot = try OMPUsageParser.parse(jsonString: json, subprovider: "all", hiddenItemIDs: hidden)
+        let primary = try #require(snapshot.primary)
+        // Total accounts = 4 (AGY) + 1 (Codex) = 5 accounts (xAI's 1 account is excluded!)
+        // Total used = 1.8 + 0.35 = 2.15 accounts -> 2.15 / 5 = 43.0%
+        #expect(abs(primary.usedPercent - 43.0) < 0.001)
+        #expect(primary.resetDescription == "4 AGY + 1 Codex")
+        let labels = ProviderDescriptorRegistry.descriptor(for: .omp).presentation
+            .rateWindowLabels(metadata: ProviderDescriptorRegistry.descriptor(for: .omp).metadata, snapshot: snapshot)
+        #expect(labels.primary == "4 AGY + 1 Codex")
     }
 
     @Test

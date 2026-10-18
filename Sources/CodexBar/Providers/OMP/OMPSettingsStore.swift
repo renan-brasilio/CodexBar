@@ -17,8 +17,10 @@ extension SettingsStore {
     }
 
     public func ompSettingsSnapshot() -> OMPProviderSettings {
-        OMPProviderSettings(
+        let hidden = self.configSnapshot.providerConfig(for: .omp)?.hiddenUsageItemIDs ?? []
+        return OMPProviderSettings(
             subprovider: self.ompSubprovider,
-            customSubprovider: self.ompCustomSubprovider)
+            customSubprovider: self.ompCustomSubprovider,
+            hiddenUsageItemIDs: hidden)
     }
 }

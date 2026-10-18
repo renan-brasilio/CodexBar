@@ -3,13 +3,16 @@ import Foundation
 public struct OMPProviderSettings: Sendable, Equatable {
     public let subprovider: String
     public let customSubprovider: String?
+    public let hiddenUsageItemIDs: [String]
 
     public init(
         subprovider: String = "all",
-        customSubprovider: String? = nil)
+        customSubprovider: String? = nil,
+        hiddenUsageItemIDs: [String] = [])
     {
         self.subprovider = subprovider
         self.customSubprovider = customSubprovider
+        self.hiddenUsageItemIDs = hiddenUsageItemIDs
     }
 
     public var effectiveSubprovider: String {

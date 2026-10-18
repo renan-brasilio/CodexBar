@@ -43,14 +43,16 @@ public enum OMPProviderDescriptor {
             history: .optIn,
             presentation: ProviderUsagePresentation(
                 rateWindowLabeler: { metadata, snapshot, _ in
-                    let primaryTitle = snapshot.primary?.windowMinutes.map { minutes in
-                        minutes <= 300 ? metadata.sessionLabel : "\(minutes / 60)h"
-                    } ?? metadata.sessionLabel
-                    let secondaryTitle = snapshot.secondary?.windowMinutes.map { minutes in
-                        if minutes >= 40000 { return "Monthly" }
-                        if minutes >= 10000 { return metadata.weeklyLabel }
-                        return "\(minutes / 60)h"
-                    } ?? metadata.weeklyLabel
+                    let primaryTitle = snapshot.primary?.resetDescription
+                        ?? (snapshot.primary?.windowMinutes.map { minutes in
+                            minutes <= 300 ? metadata.sessionLabel : "\(minutes / 60)h"
+                        } ?? metadata.sessionLabel)
+                    let secondaryTitle = snapshot.secondary?.resetDescription
+                        ?? (snapshot.secondary?.windowMinutes.map { minutes in
+                            if minutes >= 40000 { return "Monthly" }
+                            if minutes >= 10000 { return metadata.weeklyLabel }
+                            return "\(minutes / 60)h"
+                        } ?? metadata.weeklyLabel)
                     return ProviderRateWindowLabels(
                         primary: primaryTitle,
                         secondary: secondaryTitle,
@@ -96,10 +98,12 @@ struct OMPCLIUsageStrategy: ProviderFetchStrategy {
         let subprovider = context.env["OMP_SUBPROVIDER"]
             ?? context.settings?.omp?.effectiveSubprovider
             ?? "all"
+        let hiddenItemIDs = context.settings?.omp?.hiddenUsageItemIDs ?? []
 
         let snapshot = try await OMPCLIProbe().fetch(
             environment: context.env,
-            subprovider: subprovider)
+            subprovider: subprovider,
+            hiddenItemIDs: hiddenItemIDs)
 
         return self.makeResult(
             usage: snapshot,
