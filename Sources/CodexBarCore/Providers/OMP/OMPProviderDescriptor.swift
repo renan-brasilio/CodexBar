@@ -10,8 +10,8 @@ public enum OMPProviderDescriptor {
             metadata: ProviderMetadata(
                 id: .omp,
                 displayName: "OMP",
-                sessionLabel: "5-Hour",
-                weeklyLabel: "Weekly",
+                sessionLabel: "5-Hour (5 accounts)",
+                weeklyLabel: "Weekly (6 accounts)",
                 opusLabel: nil,
                 supportsOpus: false,
                 supportsCredits: false,
@@ -43,18 +43,10 @@ public enum OMPProviderDescriptor {
             history: .optIn,
             presentation: ProviderUsagePresentation(
                 rateWindowLabeler: { metadata, snapshot, _ in
-                    let primaryTitle: String = {
-                        if let desc = snapshot.primary?.resetDescription, let match = desc.components(separatedBy: " accts").first {
-                            return "\(match) accts (5-Hour)"
-                        }
-                        return metadata.sessionLabel
-                    }()
-                    let secondaryTitle: String = {
-                        if let desc = snapshot.secondary?.resetDescription, let match = desc.components(separatedBy: " accts").first {
-                            return "\(match) accts (Weekly)"
-                        }
-                        return metadata.weeklyLabel
-                    }()
+                    let primaryTitle = snapshot.primary?.windowMinutes == 10080
+                        ? metadata.weeklyLabel
+                        : metadata.sessionLabel
+                    let secondaryTitle = metadata.weeklyLabel
                     return ProviderRateWindowLabels(
                         primary: primaryTitle,
                         secondary: secondaryTitle,

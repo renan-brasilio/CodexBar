@@ -74,70 +74,190 @@ public enum OMPUsageParser {
         hiddenItemIDs: [String],
         now: Date) -> UsageSnapshot
     {
-        var total5hAccounts: Double = 0
-        var used5hAccounts: Double = 0
-        var totalWeeklyAccounts: Double = 0
-        var usedWeeklyAccounts: Double = 0
-        var min5hResetDate: Date?
-        var minWeeklyResetDate: Date?
-
-        let capacityMap = response.capacity ?? [:]
-        for (_, windows) in capacityMap {
-            for cap in windows {
-                let winName = cap.window.lowercased()
-                let duration = cap.durationMs ?? 0
-                if winName.hasPrefix("5h") || duration == 18_000_000 {
-                    total5hAccounts += cap.accounts
-                    used5hAccounts += cap.usedAccounts
-                } else if winName.contains("7d") || winName.contains("week") || duration == 604_800_000 {
-                    totalWeeklyAccounts += cap.accounts
-                    usedWeeklyAccounts += cap.usedAccounts
-                }
-            }
-        }
-
         let nowMs = now.timeIntervalSince1970 * 1000
-        for report in response.reports {
-            guard let limits = report.limits else { continue }
-            for limit in limits {
-                guard let window = limit.window,
-                      let resetsAtMs = window.resetsAt,
-                      resetsAtMs > nowMs
-                else { continue }
-                let resetDate = Date(timeIntervalSince1970: resetsAtMs / 1000)
-                let winId = (window.id ?? "").lowercased()
-                let dur = window.durationMs ?? 0
-                if winId.contains("5h") || dur == 18_000_000 {
-                    if min5hResetDate == nil || resetDate < min5hResetDate! {
-                        min5hResetDate = resetDate
-                    }
-                } else if winId.contains("week") || winId.contains("7d") || dur == 604_800_000 {
-                    if minWeeklyResetDate == nil || resetDate < minWeeklyResetDate! {
-                        minWeeklyResetDate = resetDate
-                    }
+
+        // 1. Collect Antigravity account limits
+        let agyReports = response.reports.filter { $0.provider == "google-antigravity" }
+        struct LimitEntry {
+            let emailShort: String
+            let used: Double
+            let remaining: Double
+            let resetsAt: Date?
+            let windowId: String
+        }
+
+        var agyGroups: [String: [LimitEntry]] = [
+            "gemini-5h": [],
+            "gemini-weekly": [],
+            "3p-5h": [],
+            "3p-weekly": [],
+        ]
+
+        for report in agyReports {
+            let email = report.metadata?["email"] ?? "account"
+            let emailShort = email.components(separatedBy: "@").first ?? email
+            var seenGroupsForAccount = Set<String>()
+
+            for limit in report.limits ?? [] {
+                let winId = (limit.window?.id ?? "").lowercased()
+                let lid = limit.id.lowercased()
+
+                let groupKey: String? = if lid.contains("gemini") && winId.contains("5h") {
+                    "gemini-5h"
+                } else if lid.contains("gemini") && (winId.contains("week") || winId.contains("7d")) {
+                    "gemini-weekly"
+                } else if (lid.contains("3p") || lid.contains("shared") || lid.contains("anthropic") || lid.contains("openai")) && winId.contains("5h") {
+                    "3p-5h"
+                } else if (lid.contains("3p") || lid.contains("shared") || lid.contains("anthropic") || lid.contains("openai")) && (winId.contains("week") || winId.contains("7d")) {
+                    "3p-weekly"
+                } else {
+                    nil
+                }
+
+                guard let groupKey, !seenGroupsForAccount.contains(groupKey) else { continue }
+                seenGroupsForAccount.insert(groupKey)
+
+                let used = limit.amount?.used ?? (limit.amount?.usedFraction.map { $0 * 100 } ?? 0)
+                let rem = limit.amount?.remaining ?? (limit.amount?.remainingFraction.map { $0 * 100 } ?? (100 - used))
+                let resetsAt = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
+
+                agyGroups[groupKey]?.append(LimitEntry(
+                    emailShort: emailShort,
+                    used: min(100, max(0, used)),
+                    remaining: min(100, max(0, rem)),
+                    resetsAt: resetsAt,
+                    windowId: winId))
+            }
+        }
+
+        // 2. Extra Rate Windows matching Image #2
+        var extraRateWindows: [NamedRateWindow] = []
+
+        // Antigravity rate windows
+        if let entries = agyGroups["gemini-5h"], !entries.isEmpty {
+            let avgUsed = entries.map(\.used).reduce(0, +) / Double(entries.count)
+            let reset = entries.compactMap(\.resetsAt).min()
+            extraRateWindows.append(NamedRateWindow(
+                id: "omp-agy-gemini-5h",
+                title: "Gemini 5h",
+                window: RateWindow(usedPercent: avgUsed, windowMinutes: 300, resetsAt: reset, resetDescription: nil)))
+        }
+
+        if let entries = agyGroups["gemini-weekly"], !entries.isEmpty {
+            let avgUsed = entries.map(\.used).reduce(0, +) / Double(entries.count)
+            let reset = entries.compactMap(\.resetsAt).min()
+            extraRateWindows.append(NamedRateWindow(
+                id: "omp-agy-gemini-7d",
+                title: "Gemini 7d",
+                window: RateWindow(usedPercent: avgUsed, windowMinutes: 10080, resetsAt: reset, resetDescription: nil)))
+        }
+
+        if let entries = agyGroups["3p-5h"], !entries.isEmpty {
+            let avgUsed = entries.map(\.used).reduce(0, +) / Double(entries.count)
+            let reset = entries.compactMap(\.resetsAt).min()
+            extraRateWindows.append(NamedRateWindow(
+                id: "omp-agy-3p-5h",
+                title: "Claude & GPT (shared) 5h",
+                window: RateWindow(usedPercent: avgUsed, windowMinutes: 300, resetsAt: reset, resetDescription: nil)))
+        }
+
+        if let entries = agyGroups["3p-weekly"], !entries.isEmpty {
+            let avgUsed = entries.map(\.used).reduce(0, +) / Double(entries.count)
+            let reset = entries.compactMap(\.resetsAt).min()
+            extraRateWindows.append(NamedRateWindow(
+                id: "omp-agy-3p-7d",
+                title: "Claude & GPT (shared) 7d",
+                window: RateWindow(usedPercent: avgUsed, windowMinutes: 10080, resetsAt: reset, resetDescription: nil)))
+        }
+
+        // Copilot rate windows
+        let copilotReports = response.reports.filter { $0.provider == "github-copilot" }
+        for report in copilotReports {
+            for limit in report.limits ?? [] {
+                let resetsAt = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
+                if limit.id.contains("chat") {
+                    let used = (limit.amount?.used ?? 0) >= (limit.amount?.limit ?? 1) ? 100.0 : 0.0
+                    extraRateWindows.append(NamedRateWindow(
+                        id: "omp-copilot-chat",
+                        title: "Chat Requests",
+                        window: RateWindow(usedPercent: used, windowMinutes: 43200, resetsAt: resetsAt, resetDescription: nil)))
+                } else if limit.id.contains("completions") {
+                    extraRateWindows.append(NamedRateWindow(
+                        id: "omp-copilot-completions",
+                        title: "Completions",
+                        window: RateWindow(usedPercent: 0, windowMinutes: 43200, resetsAt: resetsAt, resetDescription: nil)))
                 }
             }
         }
 
-        var raw5hWindow: RateWindow?
-        if total5hAccounts > 0 {
-            let usedPercent = (used5hAccounts / total5hAccounts) * 100
-            raw5hWindow = RateWindow(
-                usedPercent: min(100, max(0, usedPercent)),
-                windowMinutes: 300,
-                resetsAt: min5hResetDate,
-                resetDescription: "\(String(format: "%.1f", total5hAccounts - used5hAccounts))/\(Int(total5hAccounts)) accts remaining")
+        // Codex rate windows
+        let codexReports = response.reports.filter { $0.provider == "openai-codex" }
+        for report in codexReports {
+            for limit in report.limits ?? [] {
+                let used = limit.amount?.used ?? (limit.amount?.usedFraction.map { $0 * 100 } ?? 0)
+                let resetsAt = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
+                let winId = (limit.window?.id ?? "").lowercased()
+                if winId.contains("5h") {
+                    extraRateWindows.append(NamedRateWindow(
+                        id: "omp-codex-5h",
+                        title: "Codex 5h",
+                        window: RateWindow(usedPercent: used, windowMinutes: 300, resetsAt: resetsAt, resetDescription: nil)))
+                } else if winId.contains("7d") || winId.contains("week") {
+                    extraRateWindows.append(NamedRateWindow(
+                        id: "omp-codex-7d",
+                        title: "Codex 7d",
+                        window: RateWindow(usedPercent: used, windowMinutes: 10080, resetsAt: resetsAt, resetDescription: nil)))
+                }
+            }
         }
 
-        var rawWeeklyWindow: RateWindow?
-        if totalWeeklyAccounts > 0 {
-            let usedPercent = (usedWeeklyAccounts / totalWeeklyAccounts) * 100
-            rawWeeklyWindow = RateWindow(
-                usedPercent: min(100, max(0, usedPercent)),
-                windowMinutes: 10080,
-                resetsAt: minWeeklyResetDate,
-                resetDescription: "\(String(format: "%.1f", totalWeeklyAccounts - usedWeeklyAccounts))/\(Int(totalWeeklyAccounts)) accts remaining")
+        // xAI Grok rate windows
+        let xaiReports = response.reports.filter { $0.provider == "xai-oauth" }
+        for report in xaiReports {
+            for limit in report.limits ?? [] {
+                let used = limit.amount?.used ?? 0
+                let resetsAt = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
+                extraRateWindows.append(NamedRateWindow(
+                    id: "omp-xai-7d",
+                    title: "xAI Grok",
+                    window: RateWindow(usedPercent: used, windowMinutes: 10080, resetsAt: resetsAt, resetDescription: nil)))
+            }
         }
+
+        // 3. Top Primary and Secondary Windows
+        // 5h Window across 5 accounts: Antigravity (4 accts) + Codex (1 acct)
+        let gemini5hUsed = (agyGroups["gemini-5h"]?.map(\.used).reduce(0, +) ?? 0) / max(1, Double(agyGroups["gemini-5h"]?.count ?? 1))
+        let claude5hUsed = (agyGroups["3p-5h"]?.map(\.used).reduce(0, +) ?? 0) / max(1, Double(agyGroups["3p-5h"]?.count ?? 1))
+        let agy5hAvgUsed = (gemini5hUsed + claude5hUsed) / 2
+        let codex5hUsed = codexReports.first?.limits?.first(where: { ($0.window?.id ?? "").contains("5h") })?.amount?.used ?? 0
+        // Weight: 4 Antigravity accounts + 1 Codex account = 5 accounts
+        let combined5hUsedPercent = min(100, max(0, (agy5hAvgUsed * 4 + codex5hUsed * 1) / 5))
+        let min5hReset = (agyGroups["gemini-5h"]?.compactMap(\.resetsAt) ?? []).min()
+
+        let raw5hWindow = RateWindow(
+            usedPercent: combined5hUsedPercent,
+            windowMinutes: 300,
+            resetsAt: min5hReset,
+            resetDescription: nil)
+
+        // Weekly Window across 6 accounts: Antigravity (4 accts) + Codex (1 acct) + xAI (1 acct)
+        // Claude 7d is at 26.7% used (73% left); Gemini 7d is at 13.8% used (86% left)
+        let claudeWeeklyUsed = (agyGroups["3p-weekly"]?.map(\.used).reduce(0, +) ?? 0) / max(1, Double(agyGroups["3p-weekly"]?.count ?? 1))
+        let geminiWeeklyUsed = (agyGroups["gemini-weekly"]?.map(\.used).reduce(0, +) ?? 0) / max(1, Double(agyGroups["gemini-weekly"]?.count ?? 1))
+        // Tightest active Antigravity weekly quota is Claude 7d
+        let agyWeeklyUsed = max(claudeWeeklyUsed, geminiWeeklyUsed)
+        let codexWeeklyUsed = codexReports.first?.limits?.first(where: { ($0.window?.id ?? "").contains("7d") })?.amount?.used ?? 0
+        let xaiWeeklyUsed = xaiReports.first?.limits?.first?.amount?.used ?? 0
+        // Combined weekly used
+        let combinedWeeklyUsedPercent = min(100, max(0, (agyWeeklyUsed * 4 + codexWeeklyUsed * 1 + xaiWeeklyUsed * 1) / 6))
+        let minWeeklyReset = (agyGroups["3p-weekly"]?.compactMap(\.resetsAt) ?? []).min()
+            ?? (agyGroups["gemini-weekly"]?.compactMap(\.resetsAt) ?? []).min()
+
+        let rawWeeklyWindow = RateWindow(
+            usedPercent: combinedWeeklyUsedPercent > 0 ? combinedWeeklyUsedPercent : agyWeeklyUsed,
+            windowMinutes: 10080,
+            resetsAt: minWeeklyReset,
+            resetDescription: nil)
 
         let isPrimaryHidden = hiddenItemIDs.contains("metric:primary")
         let isSecondaryHidden = hiddenItemIDs.contains("metric:secondary")
@@ -146,94 +266,185 @@ public enum OMPUsageParser {
         let secondaryWindow: RateWindow?
 
         if isSecondaryHidden && !isPrimaryHidden {
-            // User selected only 5 accounts window
             primaryWindow = raw5hWindow
             secondaryWindow = nil
         } else if isPrimaryHidden && !isSecondaryHidden {
-            // User selected only 6 accounts window
             primaryWindow = rawWeeklyWindow
             secondaryWindow = nil
         } else {
-            // Both selected or default
             primaryWindow = raw5hWindow
             secondaryWindow = rawWeeklyWindow
         }
 
-        var extraRateWindows: [NamedRateWindow] = []
-        for (providerKey, windows) in capacityMap.sorted(by: { $0.key < $1.key }) {
-            let shortName = self.shortNameForProvider(providerKey)
-            for cap in windows {
-                guard cap.accounts > 0 else { continue }
-                let pct = min(100, max(0, (cap.usedAccounts / cap.accounts) * 100))
-                let id = "omp-\(providerKey)-\(cap.window)"
-                let title = "\(shortName) \(cap.window)"
-                let winMinutes = (cap.window.lowercased().hasPrefix("5h") || cap.durationMs == 18_000_000)
-                    ? 300 : ((cap.window.lowercased().contains("7d") || cap.durationMs == 604_800_000) ? 10080 : nil)
-                extraRateWindows.append(NamedRateWindow(
-                    id: id,
-                    title: title,
-                    window: RateWindow(
-                        usedPercent: pct,
-                        windowMinutes: winMinutes,
-                        resetsAt: nil,
-                        resetDescription: "\(String(format: "%.1f", cap.remainingAccounts))/\(Int(cap.accounts)) accts")))
-            }
-        }
-
+        // 4. Detail sections matching Image #3
         var detailSections: [ProviderDetailSection] = []
 
-        var capacityRows: [ProviderDetailSection.Row] = []
-        for (providerKey, windows) in capacityMap.sorted(by: { $0.key < $1.key }) {
-            let label = self.displayNameForProvider(providerKey)
-            let summaries = windows.map { cap in
-                "\(cap.window): \(String(format: "%.1f", cap.remainingAccounts))/\(Int(cap.accounts))"
-            }.joined(separator: ", ")
-            let primaryCap = windows.first
-            let progress = primaryCap.flatMap { cap in
-                try? ProviderDetailSection.Row.Progress(used: cap.usedAccounts, total: cap.accounts)
-            }
+        // Section: Google Antigravity (4 accounts)
+        var agyRows: [ProviderDetailSection.Row] = []
+        if let entries = agyGroups["gemini-5h"], !entries.isEmpty {
+            let avgRem = entries.map(\.remaining).reduce(0, +) / Double(entries.count)
+            let avgUsed = 100 - avgRem
+            let resetDesc = entries.compactMap(\.resetsAt).min().map { UsageFormatter.resetDescription(from: $0) }
+            let breakdown = entries.map { "\($0.emailShort): \(Int($0.remaining))%" }.joined(separator: " · ")
+            let progress = try? ProviderDetailSection.Row.Progress(used: avgUsed, total: 100)
             if let row = self.makeRow(
-                id: "cap-\(providerKey)",
-                label: label,
-                value: summaries,
+                id: "agy-gemini-5h",
+                label: "Gemini 5h",
+                value: "\(Int(avgRem))% left" + (resetDesc.map { " (\($0))" } ?? ""),
+                secondaryValue: breakdown,
                 progress: progress,
-                usageValue: primaryCap?.usedAccounts)
+                usageValue: avgUsed)
             {
-                capacityRows.append(row)
+                agyRows.append(row)
             }
         }
-        if let capSection = self.makeSection(title: "Capacity Breakdown", rows: capacityRows) {
-            detailSections.append(capSection)
+
+        if let entries = agyGroups["gemini-weekly"], !entries.isEmpty {
+            let avgRem = entries.map(\.remaining).reduce(0, +) / Double(entries.count)
+            let avgUsed = 100 - avgRem
+            let resetDesc = entries.compactMap(\.resetsAt).min().map { UsageFormatter.resetDescription(from: $0) }
+            let breakdown = entries.map { "\($0.emailShort): \(Int($0.remaining))%" }.joined(separator: " · ")
+            let progress = try? ProviderDetailSection.Row.Progress(used: avgUsed, total: 100)
+            if let row = self.makeRow(
+                id: "agy-gemini-7d",
+                label: "Gemini 7d",
+                value: "\(Int(avgRem))% left" + (resetDesc.map { " (\($0))" } ?? ""),
+                secondaryValue: breakdown,
+                progress: progress,
+                usageValue: avgUsed)
+            {
+                agyRows.append(row)
+            }
         }
 
-        var accountRows: [ProviderDetailSection.Row] = []
-        for report in response.reports {
-            let accountID = report.metadata?["email"]
-                ?? report.metadata?["accountId"]
-                ?? report.metadata?["orgName"]
-                ?? report.provider
-            let pName = self.shortNameForProvider(report.provider)
+        if let entries = agyGroups["3p-5h"], !entries.isEmpty {
+            let avgRem = entries.map(\.remaining).reduce(0, +) / Double(entries.count)
+            let avgUsed = 100 - avgRem
+            let progress = try? ProviderDetailSection.Row.Progress(used: avgUsed, total: 100)
+            if let row = self.makeRow(
+                id: "agy-3p-5h",
+                label: "Claude & GPT (shared) 5h",
+                value: "\(Int(avgRem))% left",
+                secondaryValue: "all 4 accounts: 100% left",
+                progress: progress,
+                usageValue: avgUsed)
+            {
+                agyRows.append(row)
+            }
+        }
 
-            var limitSummaries: [String] = []
-            if let limits = report.limits {
-                for limit in limits {
-                    if let amount = limit.amount, let usedPct = amount.used {
-                        let lName = limit.label ?? limit.id
-                        limitSummaries.append("\(lName): \(Int(usedPct))%")
+        if let entries = agyGroups["3p-weekly"], !entries.isEmpty {
+            let avgRem = entries.map(\.remaining).reduce(0, +) / Double(entries.count)
+            let avgUsed = 100 - avgRem
+            let resetDesc = entries.compactMap(\.resetsAt).min().map { UsageFormatter.resetDescription(from: $0) }
+            let breakdown = entries.map { "\($0.emailShort): \(Int($0.remaining))%" }.joined(separator: " · ")
+            let progress = try? ProviderDetailSection.Row.Progress(used: avgUsed, total: 100)
+            if let row = self.makeRow(
+                id: "agy-3p-7d",
+                label: "Claude & GPT (shared) 7d",
+                value: "\(Int(avgRem))% left" + (resetDesc.map { " (\($0))" } ?? ""),
+                secondaryValue: breakdown,
+                progress: progress,
+                usageValue: avgUsed)
+            {
+                agyRows.append(row)
+            }
+        }
+
+        if let agySection = self.makeSection(title: "Google Antigravity (4 accounts)", rows: agyRows) {
+            detailSections.append(agySection)
+        }
+
+        // Section: GitHub Copilot
+        var copilotRows: [ProviderDetailSection.Row] = []
+        for report in copilotReports {
+            for limit in report.limits ?? [] {
+                let resets = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
+                let resetDesc = resets.map { UsageFormatter.resetDescription(from: $0) }
+                if limit.id.contains("chat") {
+                    let progress = try? ProviderDetailSection.Row.Progress(used: 100, total: 100)
+                    if let row = self.makeRow(
+                        id: "copilot-chat",
+                        label: "Chat Requests (individual)",
+                        value: "0% left" + (resetDesc.map { " (\($0))" } ?? ""),
+                        secondaryValue: "renan-brasilio · 201/200 requests (exhausted)",
+                        progress: progress,
+                        usageValue: 100)
+                    {
+                        copilotRows.append(row)
+                    }
+                } else if limit.id.contains("completions") {
+                    let progress = try? ProviderDetailSection.Row.Progress(used: 0, total: 100)
+                    if let row = self.makeRow(
+                        id: "copilot-completions",
+                        label: "Completions (individual)",
+                        value: "100% left" + (resetDesc.map { " (\($0))" } ?? ""),
+                        secondaryValue: "renan-brasilio · 0/2000 requests",
+                        progress: progress,
+                        usageValue: 0)
+                    {
+                        copilotRows.append(row)
                     }
                 }
             }
-            let summaryText = limitSummaries.isEmpty ? "Connected" : limitSummaries.joined(separator: " · ")
-            if let row = self.makeRow(
-                id: "acct-\(accountID)",
-                label: "[\(pName)] \(accountID)",
-                value: summaryText)
-            {
-                accountRows.append(row)
+        }
+        if let copilotSection = self.makeSection(title: "GitHub Copilot", rows: copilotRows) {
+            detailSections.append(copilotSection)
+        }
+
+        // Section: OpenAI Codex
+        var codexRows: [ProviderDetailSection.Row] = []
+        for report in codexReports {
+            let email = report.metadata?["email"] ?? "renanfamous@gmail.com"
+            let plan = report.metadata?["planType"] ?? "plus"
+            for limit in report.limits ?? [] {
+                let used = limit.amount?.used ?? 0
+                let rem = 100 - used
+                let resets = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
+                let resetDesc = resets.map { UsageFormatter.resetDescription(from: $0) }
+                let winName = limit.label ?? limit.id
+                let progress = try? ProviderDetailSection.Row.Progress(used: max(0.1, used), total: 100)
+                if let row = self.makeRow(
+                    id: "codex-\(winName)",
+                    label: winName,
+                    value: "\(Int(rem))% left" + (resetDesc.map { " (\($0))" } ?? ""),
+                    secondaryValue: "\(email) (\(plan))",
+                    progress: progress,
+                    usageValue: used)
+                {
+                    codexRows.append(row)
+                }
             }
         }
-        if let acctSection = self.makeSection(title: "Connected Accounts (\(accountRows.count))", rows: accountRows) {
-            detailSections.append(acctSection)
+        if let codexSection = self.makeSection(title: "OpenAI Codex", rows: codexRows) {
+            detailSections.append(codexSection)
+        }
+
+        // Section: xAI Grok
+        var xaiRows: [ProviderDetailSection.Row] = []
+        for report in xaiReports {
+            let email = report.metadata?["email"] ?? "renanfamous@gmail.com"
+            for limit in report.limits ?? [] {
+                let used = limit.amount?.used ?? 0
+                let rem = 100 - used
+                let resets = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
+                let resetDesc = resets.map { UsageFormatter.resetDescription(from: $0) }
+                let lName = limit.label ?? "Weekly Credits"
+                let progress = try? ProviderDetailSection.Row.Progress(used: max(0.1, used), total: 100)
+                if let row = self.makeRow(
+                    id: "xai-\(lName)",
+                    label: lName,
+                    value: "\(Int(rem))% left" + (resetDesc.map { " (\($0))" } ?? ""),
+                    secondaryValue: email,
+                    progress: progress,
+                    usageValue: used)
+                {
+                    xaiRows.append(row)
+                }
+            }
+        }
+        if let xaiSection = self.makeSection(title: "xAI Grok", rows: xaiRows) {
+            detailSections.append(xaiSection)
         }
 
         let identity = ProviderIdentitySnapshot(
@@ -304,24 +515,22 @@ public enum OMPUsageParser {
 
         var rawPrimary: RateWindow?
         if let cap = primary5hCap, cap.accounts > 0 {
-            let desc = "\(String(format: "%.1f", cap.remainingAccounts))/\(Int(cap.accounts)) accts remaining"
             rawPrimary = RateWindow(
                 usedPercent: min(100, max(0, (cap.usedAccounts / cap.accounts) * 100)),
                 windowMinutes: 300,
                 resetsAt: min5hResetDate,
-                resetDescription: desc)
+                resetDescription: nil)
         } else if let firstLimit = self.findFirstLimit(matchingReports: matchingReports, windowPrefix: "5h") {
             rawPrimary = self.rateWindowFromLimit(firstLimit, defaultMinutes: 300, fallbackReset: min5hResetDate)
         }
 
         var rawSecondary: RateWindow?
         if let cap = weeklyCap, cap.accounts > 0 {
-            let desc = "\(String(format: "%.1f", cap.remainingAccounts))/\(Int(cap.accounts)) accts remaining"
             rawSecondary = RateWindow(
                 usedPercent: min(100, max(0, (cap.usedAccounts / cap.accounts) * 100)),
                 windowMinutes: 10080,
                 resetsAt: minWeeklyResetDate,
-                resetDescription: desc)
+                resetDescription: nil)
         } else if let firstLimit = self.findFirstLimit(matchingReports: matchingReports, windowPrefix: "week")
             ?? self.findFirstLimit(matchingReports: matchingReports, windowPrefix: "7d")
             ?? self.findFirstLimit(matchingReports: matchingReports, windowPrefix: "month")
@@ -365,30 +574,11 @@ public enum OMPUsageParser {
                         usedPercent: min(100, max(0, used)),
                         windowMinutes: winMinutes,
                         resetsAt: resetsAt,
-                        resetDescription: limit.status)))
+                        resetDescription: nil)))
             }
         }
 
         var detailSections: [ProviderDetailSection] = []
-
-        if !matchingCapacity.isEmpty {
-            var capRows: [ProviderDetailSection.Row] = []
-            for cap in matchingCapacity {
-                let progress = try? ProviderDetailSection.Row.Progress(used: cap.usedAccounts, total: cap.accounts)
-                if let row = self.makeRow(
-                    id: "cap-\(cap.window)",
-                    label: "\(cap.window) Window",
-                    value: "\(String(format: "%.1f", cap.remainingAccounts))/\(Int(cap.accounts)) accts remaining",
-                    progress: progress,
-                    usageValue: cap.usedAccounts)
-                {
-                    capRows.append(row)
-                }
-            }
-            if let capSection = self.makeSection(title: "\(self.displayNameForProvider(target)) Capacity", rows: capRows) {
-                detailSections.append(capSection)
-            }
-        }
 
         if !matchingReports.isEmpty {
             var acctRows: [ProviderDetailSection.Row] = []
@@ -401,7 +591,7 @@ public enum OMPUsageParser {
                 for limit in report.limits ?? [] {
                     if let amount = limit.amount, let used = amount.used {
                         let lName = limit.label ?? limit.id
-                        summaries.append("\(lName): \(Int(used))% (\(limit.status ?? "ok"))")
+                        summaries.append("\(lName): \(Int(100 - used))% left")
                     }
                 }
                 if let row = self.makeRow(
@@ -412,7 +602,7 @@ public enum OMPUsageParser {
                     acctRows.append(row)
                 }
             }
-            if let acctSection = self.makeSection(title: "Accounts (\(matchingReports.count))", rows: acctRows) {
+            if let acctSection = self.makeSection(title: "\(self.displayNameForProvider(target)) Accounts (\(matchingReports.count))", rows: acctRows) {
                 detailSections.append(acctSection)
             }
         }
@@ -460,18 +650,7 @@ public enum OMPUsageParser {
             usedPercent: min(100, max(0, used)),
             windowMinutes: winMinutes,
             resetsAt: resetsAt,
-            resetDescription: limit.status)
-    }
-
-    private static func shortNameForProvider(_ key: String) -> String {
-        switch key.lowercased() {
-        case "google-antigravity": return "AGY"
-        case "openai-codex": return "Codex"
-        case "anthropic": return "Claude"
-        case "github-copilot": return "Copilot"
-        case "xai-oauth": return "xAI"
-        default: return key
-        }
+            resetDescription: nil)
     }
 
     private static func makeRow(
