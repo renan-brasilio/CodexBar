@@ -10,8 +10,8 @@ public enum OMPProviderDescriptor {
             metadata: ProviderMetadata(
                 id: .omp,
                 displayName: "OMP",
-                sessionLabel: "5-Hour (5 accounts)",
-                weeklyLabel: "Weekly (6 accounts)",
+                sessionLabel: "5-Hour",
+                weeklyLabel: "Weekly",
                 opusLabel: nil,
                 supportsOpus: false,
                 supportsCredits: false,
@@ -23,7 +23,7 @@ public enum OMPProviderDescriptor {
                 burnDownWidgetSelectable: false,
                 isPrimaryProvider: false,
                 usesAccountFallback: false,
-                dashboardURL: "https://github.com/renan-brasilio/omp-renan",
+                dashboardURL: nil,
                 statusPageURL: nil),
             branding: ProviderBranding(
                 iconStyle: .init(provider: .omp),

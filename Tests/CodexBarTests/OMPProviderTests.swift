@@ -54,7 +54,7 @@ struct OMPProviderTests {
             }
           ],
           "metadata": {
-            "email": "brasiliodarocha@gmail.com"
+            "email": "user1@example.com"
           }
         },
         {
@@ -101,7 +101,7 @@ struct OMPProviderTests {
             }
           ],
           "metadata": {
-            "email": "renanfamous@gmail.com"
+            "email": "user2@example.com"
           }
         }
       ],

@@ -40,24 +40,31 @@ public struct OMPCLIProbe: Sendable {
             env: environment,
             loginPATH: loginPATH)
 
-        let result = try await SubprocessRunner.run(
-            binary: executable,
-            arguments: ["usage", "--json"],
-            environment: commandEnvironment,
-            timeout: Self.commandTimeout,
-            standardInput: FileHandle.nullDevice,
-            label: "omp-usage")
+        let result: SubprocessResult
+        do {
+            result = try await SubprocessRunner.run(
+                binary: executable,
+                arguments: ["usage", "--json"],
+                environment: commandEnvironment,
+                timeout: Self.commandTimeout,
+                standardInput: FileHandle.nullDevice,
+                label: "omp-usage")
+        } catch let error as SubprocessRunnerError {
+            throw OMPUsageError.executionFailed(error.localizedDescription)
+        }
 
-        let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? result.stderr
-            : result.stdout
-
-        guard !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        let stdout = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !stdout.isEmpty else {
+            let stderr = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !stderr.isEmpty {
+                let sanitized = String(stderr.prefix(200))
+                throw OMPUsageError.executionFailed(sanitized)
+            }
             throw OMPUsageError.parseFailed("The omp CLI returned no usage data.")
         }
 
         return try OMPUsageParser.parse(
-            jsonString: output,
+            jsonString: stdout,
             subprovider: subprovider,
             hiddenItemIDs: hiddenItemIDs,
             now: now)

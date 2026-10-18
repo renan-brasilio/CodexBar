@@ -157,9 +157,6 @@ public enum BinaryLocator {
         fileManager: FileManager = .default,
         home: String = NSHomeDirectory()) -> String?
     {
-        if let override = env["OMP_CLI_PATH"] {
-            return fileManager.isExecutableFile(atPath: override) ? override : nil
-        }
         // Provider-specific by design: This named resolver supplies OMP's actual CLI executable name.
         return self.resolveBinary(
             name: "omp",
