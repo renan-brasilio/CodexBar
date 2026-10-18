@@ -262,10 +262,15 @@ public enum OMPUsageParser {
                 let norm = self.normalizeAmount(limit)
                 let resetsAt = limit.window?.resetsAt.flatMap { $0 > nowMs ? Date(timeIntervalSince1970: $0 / 1000) : nil }
                 let lName = limit.label ?? "Claude Quota"
+                let winId = (limit.window?.id ?? "").lowercased()
+                let winMinutes = limit.window?.durationMs.flatMap { dur -> Int? in
+                    guard dur.isFinite, dur > 0, dur < Double(Int.max) * 60_000 else { return nil }
+                    return Int(dur / (60 * 1000))
+                } ?? (winId.contains("week") || winId.contains("7d") ? 10080 : (winId.contains("month") ? 43200 : 300))
                 extraRateWindows.append(NamedRateWindow(
                     id: "omp-anthropic-\(reportIndex)-\(limit.id)",
                     title: lName,
-                    window: RateWindow(usedPercent: norm.usedPercent, windowMinutes: 300, resetsAt: resetsAt, resetDescription: nil)))
+                    window: RateWindow(usedPercent: norm.usedPercent, windowMinutes: winMinutes, resetsAt: resetsAt, resetDescription: nil)))
             }
         }
 
@@ -608,9 +613,10 @@ public enum OMPUsageParser {
                 resetDescription: nil)
         } else if let firstLimit = self.findFirstLimit(matchingReports: matchingReports, windowPrefix: "week")
             ?? self.findFirstLimit(matchingReports: matchingReports, windowPrefix: "7d")
-            ?? self.findFirstLimit(matchingReports: matchingReports, windowPrefix: "month")
         {
             secondaryWindow = self.rateWindowFromLimit(firstLimit, defaultMinutes: 10080, fallbackReset: minWeeklyResetDate)
+        } else if let firstLimit = self.findFirstLimit(matchingReports: matchingReports, windowPrefix: "month") {
+            secondaryWindow = self.rateWindowFromLimit(firstLimit, defaultMinutes: 43200, fallbackReset: minWeeklyResetDate)
         }
 
         var extraRateWindows: [NamedRateWindow] = []
@@ -700,10 +706,20 @@ public enum OMPUsageParser {
         fallbackReset: Date?) -> RateWindow?
     {
         let norm = self.normalizeAmount(limit)
+        let winId = (limit.window?.id ?? "").lowercased()
+        let inferredMinutes: Int? = if winId.contains("month") {
+            43200
+        } else if winId.contains("week") || winId.contains("7d") {
+            10080
+        } else if winId.contains("5h") {
+            300
+        } else {
+            defaultMinutes
+        }
         let winMinutes = limit.window?.durationMs.flatMap { dur -> Int? in
             guard dur.isFinite, dur > 0, dur < Double(Int.max) * 60_000 else { return nil }
             return Int(dur / (60 * 1000))
-        } ?? defaultMinutes
+        } ?? inferredMinutes
         let resetsAt = limit.window?.resetsAt.flatMap { Date(timeIntervalSince1970: $0 / 1000) } ?? fallbackReset
         return RateWindow(
             usedPercent: norm.usedPercent,
@@ -711,7 +727,6 @@ public enum OMPUsageParser {
             resetsAt: resetsAt,
             resetDescription: nil)
     }
-
     private static func safePercentInt(from value: Double) -> Int {
         guard value.isFinite, !value.isNaN else { return 0 }
         return Int(min(100, max(0, value.rounded())))

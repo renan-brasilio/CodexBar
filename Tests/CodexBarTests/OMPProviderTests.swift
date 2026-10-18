@@ -218,16 +218,66 @@ struct OMPProviderTests {
     }
 
     @Test
-    func `omp usage parser normalizes count and request limits`() {
-        let countLimit = OMPLimit(
-            id: "copilot:chat",
-            amount: OMPAmount(unit: "requests", remaining: 180, used: 20, limit: 200))
-        let norm = OMPUsageParser.normalizeAmount(countLimit)
-        #expect(abs(norm.usedPercent - 10.0) < 0.001)
-        #expect(abs(norm.remainingPercent - 90.0) < 0.001)
-        #expect(norm.summaryText == "20/200 requests")
+    func `omp usage parser normalizes copilot request counts at parser level`() throws {
+        let json = """
+        {
+          "reports": [
+            {
+              "provider": "github-copilot",
+              "metadata": { "accountId": "octocat" },
+              "limits": [
+                {
+                  "id": "copilot:chat",
+                  "label": "Chat Requests",
+                  "window": { "id": "monthly" },
+                  "amount": { "unit": "requests", "used": 20, "limit": 200 }
+                }
+              ]
+            }
+          ]
+        }
+        """
+        // Combined mode
+        let combined = try OMPUsageParser.parse(jsonString: json, subprovider: "all")
+        let extra = try #require(combined.extraRateWindows?.first { $0.id.contains("chat") })
+        #expect(abs(extra.window.usedPercent - 10.0) < 0.001)
+        #expect(extra.title == "Chat Requests")
+
+        // Filtered subprovider mode
+        let filtered = try OMPUsageParser.parse(jsonString: json, subprovider: "copilot")
+        let secondary = try #require(filtered.secondary)
+        #expect(abs(secondary.usedPercent - 10.0) < 0.001)
+        #expect(secondary.windowMinutes == 43200)
+
+        let labels = ProviderDescriptorRegistry.descriptor(for: .omp).presentation
+            .rateWindowLabels(metadata: ProviderDescriptorRegistry.descriptor(for: .omp).metadata, snapshot: filtered)
+        #expect(labels.secondary == "Monthly")
     }
 
+    @Test
+    func `omp usage parser preserves anthropic weekly duration in combined mode`() throws {
+        let json = """
+        {
+          "reports": [
+            {
+              "provider": "anthropic",
+              "limits": [
+                {
+                  "id": "anthropic:weekly",
+                  "label": "Weekly Limit",
+                  "window": { "id": "weekly", "durationMs": 604800000 },
+                  "amount": { "used": 40, "limit": 100 }
+                }
+              ]
+            }
+          ]
+        }
+        """
+        let snapshot = try OMPUsageParser.parse(jsonString: json, subprovider: "all")
+        let extra = try #require(snapshot.extraRateWindows?.first { $0.id.contains("anthropic") })
+        #expect(extra.window.windowMinutes == 10080)
+        #expect(abs(extra.window.usedPercent - 40.0) < 0.001)
+    }
     @Test
     func `omp usage parser omits aggregate windows when no matching quota exists`() throws {
         let json = """
